@@ -1,0 +1,10 @@
+import { Router } from 'express';
+import { authMiddleware, AuthenticatedRequest } from '../middleware/auth';
+import { parsePagination } from '../utils/helpers';
+import * as notifications from '../services/notification.service';
+const router = Router(); router.use(authMiddleware); const wrap = (handler: (req: AuthenticatedRequest, res: any) => Promise<void>) => (req: any, res: any, next: any) => handler(req, res).catch(next);
+router.get('/', wrap(async (req, res) => res.json({ success: true, data: await notifications.listNotifications(req.user.id, parsePagination(req.query as any)) })));
+router.get('/unread-count', wrap(async (req, res) => res.json({ success: true, data: { count: await notifications.unreadCount(req.user.id) } })));
+router.post('/read-all', wrap(async (req, res) => { await notifications.markAllRead(req.user.id); res.status(204).send(); }));
+router.post('/:id/read', wrap(async (req, res) => { await notifications.markRead(req.user.id, String(req.params.id)); res.status(204).send(); }));
+export default router;

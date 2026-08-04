@@ -1,2 +1,30 @@
-// Placeholder — Phase 1+
-export {};
+import { Router } from 'express';
+import { z } from 'zod';
+import { DevicePlatform } from '@prisma/client';
+import { authMiddleware, AuthenticatedRequest } from '../middleware/auth';
+import { validateBody, validateQuery } from '../middleware/validate';
+import { parsePagination } from '../utils/helpers';
+import * as users from '../services/user.service';
+
+const router = Router();
+const profileSchema = z.object({ fullName: z.string().trim().min(1).max(100).optional(), bio: z.string().trim().max(150).nullable().optional(), website: z.string().url().max(250).nullable().optional(), isPrivate: z.boolean().optional() });
+const deviceSchema = z.object({ token: z.string().min(1).max(512), platform: z.nativeEnum(DevicePlatform) });
+const tokenSchema = z.object({ token: z.string().min(1).max(512) });
+const searchSchema = z.object({ q: z.string().trim().min(1).max(100), page: z.string().optional(), perPage: z.string().optional() });
+router.use(authMiddleware);
+const wrap = (handler: (req: AuthenticatedRequest, res: any) => Promise<void>) => (req: any, res: any, next: any) => handler(req, res).catch(next);
+
+router.get('/me', wrap(async (req, res) => { res.json({ success: true, data: { user: await users.getProfile(req.user.id, req.user.id) } }); }));
+router.put('/me', validateBody(profileSchema), wrap(async (req, res) => { res.json({ success: true, data: { user: await users.updateProfile(req.user.id, req.body) } }); }));
+router.post('/me/device-token', validateBody(deviceSchema), wrap(async (req, res) => { await users.registerDeviceToken(req.user.id, req.body.token, req.body.platform); res.status(204).send(); }));
+router.delete('/me/device-token', validateBody(tokenSchema), wrap(async (req, res) => { await users.unregisterDeviceToken(req.user.id, req.body.token); res.status(204).send(); }));
+router.get('/search', validateQuery(searchSchema), wrap(async (req, res) => { res.json({ success: true, data: await users.searchUsers(req.query.q as string, parsePagination(req.query as any)) }); }));
+router.get('/suggested', wrap(async (req, res) => { res.json({ success: true, data: await users.suggestedUsers(req.user.id, parsePagination(req.query as any)) }); }));
+router.get('/:id/followers', wrap(async (req, res) => { res.json({ success: true, data: await users.listConnections(String(req.params.id), 'followers', parsePagination(req.query as any)) }); }));
+router.get('/:id/following', wrap(async (req, res) => { res.json({ success: true, data: await users.listConnections(String(req.params.id), 'following', parsePagination(req.query as any)) }); }));
+router.post('/:id/follow', wrap(async (req, res) => { await users.followUser(req.user.id, String(req.params.id)); res.status(204).send(); }));
+router.delete('/:id/follow', wrap(async (req, res) => { await users.unfollowUser(req.user.id, String(req.params.id)); res.status(204).send(); }));
+router.post('/:id/block', wrap(async (req, res) => { await users.blockUser(req.user.id, String(req.params.id)); res.status(204).send(); }));
+router.delete('/:id/block', wrap(async (req, res) => { await users.unblockUser(req.user.id, String(req.params.id)); res.status(204).send(); }));
+router.get('/:id', wrap(async (req, res) => { res.json({ success: true, data: { user: await users.getProfile(String(req.params.id), req.user.id) } }); }));
+export default router;

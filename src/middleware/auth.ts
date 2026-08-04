@@ -3,7 +3,6 @@ import { User } from '@prisma/client';
 import { auth } from '../config/firebase';
 import { prisma } from '../config/database';
 import { isFirebaseConfigured } from '../config/env';
-import { UnauthorizedError } from '../utils/errors';
 
 export interface AuthenticatedRequest extends Request {
   user: User;

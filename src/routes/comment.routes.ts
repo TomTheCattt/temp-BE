@@ -1,0 +1,15 @@
+import { Router } from 'express';
+import { z } from 'zod';
+import { authMiddleware, AuthenticatedRequest } from '../middleware/auth';
+import { validateBody } from '../middleware/validate';
+import { parsePagination } from '../utils/helpers';
+import * as comments from '../services/comment.service';
+const router = Router({ mergeParams: true });
+const createSchema = z.object({ text: z.string().trim().min(1).max(1000), parentId: z.string().uuid().optional() });
+router.use(authMiddleware); const wrap = (handler: (req: AuthenticatedRequest, res: any) => Promise<void>) => (req: any, res: any, next: any) => handler(req, res).catch(next);
+router.get('/', wrap(async (req, res) => res.json({ success: true, data: await comments.listComments(String(req.params.postId), parsePagination(req.query as any)) })));
+router.post('/', validateBody(createSchema), wrap(async (req, res) => res.status(201).json({ success: true, data: { comment: await comments.createComment(req.user.id, String(req.params.postId), req.body.text, req.body.parentId) } })));
+router.delete('/:commentId', wrap(async (req, res) => { await comments.deleteComment(req.user.id, String(req.params.postId), String(req.params.commentId)); res.status(204).send(); }));
+router.post('/:commentId/like', wrap(async (req, res) => { await comments.likeComment(req.user.id, String(req.params.commentId)); res.status(204).send(); }));
+router.delete('/:commentId/like', wrap(async (req, res) => { await comments.unlikeComment(req.user.id, String(req.params.commentId)); res.status(204).send(); }));
+export default router;

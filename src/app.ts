@@ -7,6 +7,14 @@ import { initFirebase } from './config/firebase';
 import { errorHandler } from './middleware/errorHandler';
 import { defaultLimiter, authLimiter } from './middleware/rateLimiter';
 import authRoutes from './routes/auth.routes';
+import userRoutes from './routes/user.routes';
+import postRoutes from './routes/post.routes';
+import commentRoutes from './routes/comment.routes';
+import uploadRoutes from './routes/upload.routes';
+import messageRoutes from './routes/message.routes';
+import notificationRoutes from './routes/notification.routes';
+import storyRoutes from './routes/story.routes';
+import reelRoutes from './routes/reel.routes';
 
 export function createApp() {
   initFirebase();
@@ -24,6 +32,14 @@ export function createApp() {
   });
 
   app.use('/v1/auth', authLimiter, authRoutes);
+  app.use('/v1/users', userRoutes);
+  app.use('/v1/posts/:postId/comments', commentRoutes);
+  app.use('/v1/posts', postRoutes);
+  app.use('/v1/upload', uploadRoutes);
+  app.use('/v1/conversations', messageRoutes);
+  app.use('/v1/notifications', notificationRoutes);
+  app.use('/v1/stories', storyRoutes);
+  app.use('/v1/reels', reelRoutes);
 
   app.use(errorHandler);
 

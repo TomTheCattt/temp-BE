@@ -2,13 +2,17 @@ import http from 'http';
 import { createApp } from './app';
 import { env } from './config/env';
 import { prisma } from './config/database';
+import { setupWebSocket } from './websocket/server';
+import { registerJobs } from './jobs';
 
 const app = createApp();
 const server = http.createServer(app);
+setupWebSocket(server);
 
 async function start() {
   try {
     await prisma.$connect();
+    registerJobs();
     console.log('[DB] Connected to PostgreSQL');
 
     server.listen(env.PORT, () => {
