@@ -1,5 +1,7 @@
 import { Server } from 'http';
 import { RawData, WebSocket, WebSocketServer } from 'ws';
+import { URL } from 'url';
+import { z } from 'zod';
 import { auth } from '../config/firebase';
 import { prisma } from '../config/database';
 import { isFirebaseConfigured } from '../config/env';
@@ -7,8 +9,14 @@ import { isFirebaseConfigured } from '../config/env';
 interface AuthenticatedSocket extends WebSocket { userId: string; isAlive: boolean; }
 const clients = new Map<string, Set<AuthenticatedSocket>>();
 
+const MAX_MESSAGE_SIZE = 16 * 1024; // 16KB
+const wsMessageSchema = z.object({
+  type: z.enum(['typing_start', 'typing_stop', 'call_initiate', 'call_offer', 'call_answer', 'call_ice_candidate', 'call_hangup', 'call_reject', 'call_busy', 'call_ringing']),
+  to_user_id: z.string().uuid(),
+});
+
 export function setupWebSocket(server: Server) {
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({ server, path: '/ws', maxPayload: MAX_MESSAGE_SIZE });
   const heartbeat = setInterval(() => wss.clients.forEach((socket) => {
     const ws = socket as AuthenticatedSocket;
     if (!ws.isAlive) return ws.terminate();
@@ -16,7 +24,10 @@ export function setupWebSocket(server: Server) {
   }), 30_000);
 
   wss.on('connection', async (ws: AuthenticatedSocket, request) => {
-    const token = request.headers.authorization?.replace(/^Bearer\s+/i, '');
+    // Accept token from Authorization header OR query parameter
+    const url = new URL(request.url || '', `http://${request.headers.host}`);
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, '') || url.searchParams.get('token');
+
     if (!token || !isFirebaseConfigured) return ws.close(4001, 'Unauthorized');
     try {
       const decoded = await auth().verifyIdToken(token, true);
@@ -36,6 +47,11 @@ export function setupWebSocket(server: Server) {
     } catch { ws.close(4001, 'Invalid token'); }
   });
   wss.on('close', () => clearInterval(heartbeat));
+
+  // Handle WebSocket errors
+  wss.on('error', (err) => {
+    console.error('WebSocket server error:', err);
+  });
 }
 
 function rawToText(raw: RawData): string {
@@ -46,11 +62,18 @@ function rawToText(raw: RawData): string {
 
 async function relay(ws: AuthenticatedSocket, raw: RawData) {
   let message: { type?: string; to_user_id?: string };
-  try { message = JSON.parse(rawToText(raw)); } catch { return send(ws, { type: 'error', message: 'Invalid JSON' }); }
-  const allowed = new Set(['typing_start', 'typing_stop', 'call_initiate', 'call_offer', 'call_answer', 'call_ice_candidate', 'call_hangup', 'call_reject', 'call_busy', 'call_ringing']);
-  if (!message.type || !allowed.has(message.type) || !message.to_user_id) return send(ws, { type: 'error', message: 'Unsupported message' });
+  try {
+    const text = rawToText(raw);
+    const parsed = JSON.parse(text);
+    const validated = wsMessageSchema.parse(parsed);
+    message = validated;
+  } catch {
+    return send(ws, { type: 'error', message: 'Invalid message format' });
+  }
+
   const sharedConversation = await prisma.conversation.count({ where: { AND: [{ members: { some: { userId: ws.userId } } }, { members: { some: { userId: message.to_user_id } } }] } });
   if (!sharedConversation) return send(ws, { type: 'error', message: 'Recipient is not in a shared conversation' });
+  if (!message.to_user_id) return send(ws, { type: 'error', message: 'Missing recipient' });
   sendToUser(message.to_user_id, { ...message, from_user_id: ws.userId });
 }
 
