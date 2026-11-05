@@ -8,38 +8,41 @@ datasource db {
 }
 
 model User {
-  id              String    @id @default(uuid())
-  firebaseUid     String    @unique @map("firebase_uid")
-  username        String    @unique
-  fullName        String    @map("full_name")
-  email           String    @unique
-  phone           String?
-  avatarUrl       String?   @map("avatar_url")
-  bio             String?
-  website         String?
-  isVerified      Boolean   @default(false) @map("is_verified")
-  isPrivate       Boolean   @default(false) @map("is_private")
-  postsCount      Int       @default(0) @map("posts_count")
-  followersCount  Int       @default(0) @map("followers_count")
-  followingCount  Int       @default(0) @map("following_count")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
-
-  posts               Post[]
-  stories             Story[]
-  reels               Reel[]
-  comments            Comment[]
-  sentMessages        Message[]            @relation("sender")
-  notifications       Notification[]       @relation("recipient")
-  actorNotifs         Notification[]       @relation("actor")
-  followers           Follow[]             @relation("following")
-  following           Follow[]             @relation("follower")
-  likes               Like[]
-  savedPosts          SavedPost[]
-  blocks              Block[]              @relation("blocker")
+  id                  String               @id @default(uuid())
+  firebaseUid         String               @unique @map("firebase_uid")
+  username            String               @unique
+  fullName            String               @map("full_name")
+  email               String               @unique
+  phone               String?
+  avatarUrl           String?              @map("avatar_url")
+  bio                 String?
+  website             String?
+  isVerified          Boolean              @default(false) @map("is_verified")
+  isPrivate           Boolean              @default(false) @map("is_private")
+  postsCount          Int                  @default(0) @map("posts_count")
+  followersCount      Int                  @default(0) @map("followers_count")
+  followingCount      Int                  @default(0) @map("following_count")
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
   blockedBy           Block[]              @relation("blocked")
+  blocks              Block[]              @relation("blocker")
+  closeFriendOf       CloseFriend[]        @relation("friend")
+  closeFriends        CloseFriend[]        @relation("user")
+  comments            Comment[]
   conversationMembers ConversationMember[]
   deviceTokens        DeviceToken[]
+  following           Follow[]             @relation("follower")
+  followers           Follow[]             @relation("following")
+  likes               Like[]
+  sentMessages        Message[]            @relation("sender")
+  actorNotifs         Notification[]       @relation("actor")
+  notifications       Notification[]       @relation("recipient")
+  posts               Post[]
+  reels               Reel[]
+  savedPosts          SavedPost[]
+  savedReels          SavedReel[]
+  stories             Story[]
+  settings            UserSettings?
 
   @@map("users")
 }
@@ -51,16 +54,10 @@ model DeviceToken {
   platform  DevicePlatform @default(IOS)
   createdAt DateTime       @default(now()) @map("created_at")
   updatedAt DateTime       @updatedAt @map("updated_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@map("device_tokens")
-}
-
-enum DevicePlatform {
-  IOS
-  ANDROID
 }
 
 model Follow {
@@ -68,9 +65,8 @@ model Follow {
   followerId  String   @map("follower_id")
   followingId String   @map("following_id")
   createdAt   DateTime @default(now()) @map("created_at")
-
-  follower  User @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
-  following User @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
+  follower    User     @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
 
   @@unique([followerId, followingId])
   @@index([followerId])
@@ -83,32 +79,30 @@ model Block {
   blockerId String   @map("blocker_id")
   blockedId String   @map("blocked_id")
   createdAt DateTime @default(now()) @map("created_at")
-
-  blocker User @relation("blocker", fields: [blockerId], references: [id], onDelete: Cascade)
-  blocked User @relation("blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+  blocked   User     @relation("blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+  blocker   User     @relation("blocker", fields: [blockerId], references: [id], onDelete: Cascade)
 
   @@unique([blockerId, blockedId])
   @@map("blocks")
 }
 
 model Post {
-  id            String   @id @default(uuid())
-  authorId      String   @map("author_id")
+  id            String      @id @default(uuid())
+  authorId      String      @map("author_id")
   caption       String?
-  locationName  String?  @map("location_name")
-  locationLat   Float?   @map("location_lat")
-  locationLng   Float?   @map("location_lng")
-  likesCount    Int      @default(0) @map("likes_count")
-  commentsCount Int      @default(0) @map("comments_count")
-  isSponsored   Boolean  @default(false) @map("is_sponsored")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-
-  author     User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
-  mediaItems MediaItem[]
-  comments   Comment[]
-  likes      Like[]
-  savedBy    SavedPost[]
+  locationName  String?     @map("location_name")
+  locationLat   Float?      @map("location_lat")
+  locationLng   Float?      @map("location_lng")
+  likesCount    Int         @default(0) @map("likes_count")
+  commentsCount Int         @default(0) @map("comments_count")
+  isSponsored   Boolean     @default(false) @map("is_sponsored")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
+  comments      Comment[]
+  likes         Like[]
+  mediaItems    MediaItem[]
+  author        User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  savedBy       SavedPost[]
 
   @@index([authorId])
   @@index([createdAt(sort: Desc)])
@@ -125,16 +119,10 @@ model MediaItem {
   height       Int?
   duration     Float?
   sortOrder    Int       @default(0) @map("sort_order")
-
-  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  post         Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
 
   @@index([postId])
   @@map("media_items")
-}
-
-enum MediaType {
-  IMAGE
-  VIDEO
 }
 
 model Like {
@@ -144,11 +132,10 @@ model Like {
   reelId    String?  @map("reel_id")
   commentId String?  @map("comment_id")
   createdAt DateTime @default(now()) @map("created_at")
-
-  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  post    Post?    @relation(fields: [postId], references: [id], onDelete: Cascade)
-  reel    Reel?    @relation(fields: [reelId], references: [id], onDelete: Cascade)
-  comment Comment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  comment   Comment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  post      Post?    @relation(fields: [postId], references: [id], onDelete: Cascade)
+  reel      Reel?    @relation(fields: [reelId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, postId])
   @@unique([userId, reelId])
@@ -161,43 +148,43 @@ model SavedPost {
   userId    String   @map("user_id")
   postId    String   @map("post_id")
   createdAt DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, postId])
   @@map("saved_posts")
 }
 
 model Comment {
-  id         String   @id @default(uuid())
-  postId     String   @map("post_id")
-  authorId   String   @map("author_id")
+  id         String    @id @default(uuid())
+  postId     String?   @map("post_id")
+  reelId     String?   @map("reel_id")
+  authorId   String    @map("author_id")
   text       String
-  parentId   String?  @map("parent_id")
-  likesCount Int      @default(0) @map("likes_count")
-  createdAt  DateTime @default(now()) @map("created_at")
-
-  post    Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
-  author  User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
-  parent  Comment?  @relation("replies", fields: [parentId], references: [id], onDelete: Cascade)
-  replies Comment[] @relation("replies")
-  likes   Like[]
+  parentId   String?   @map("parent_id")
+  likesCount Int       @default(0) @map("likes_count")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  author     User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent     Comment?  @relation("replies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies    Comment[] @relation("replies")
+  post       Post?     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  reel       Reel?     @relation(fields: [reelId], references: [id], onDelete: Cascade)
+  likes      Like[]
 
   @@index([postId, createdAt])
+  @@index([reelId, createdAt])
   @@index([parentId])
   @@map("comments")
 }
 
 model Story {
-  id        String   @id @default(uuid())
-  authorId  String   @map("author_id")
-  createdAt DateTime @default(now()) @map("created_at")
-  expiresAt DateTime @map("expires_at")
-
-  author User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
-  items  StoryItem[]
-  views  StoryView[]
+  id        String      @id @default(uuid())
+  authorId  String      @map("author_id")
+  createdAt DateTime    @default(now()) @map("created_at")
+  expiresAt DateTime    @map("expires_at")
+  author    User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  items     StoryItem[]
+  views     StoryView[]
 
   @@index([authorId])
   @@index([expiresAt])
@@ -214,8 +201,7 @@ model StoryItem {
   stickerType String?   @map("sticker_type")
   stickerData String?   @map("sticker_data")
   createdAt   DateTime  @default(now()) @map("created_at")
-
-  story Story @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  story       Story     @relation(fields: [storyId], references: [id], onDelete: Cascade)
 
   @@index([storyId])
   @@map("story_items")
@@ -226,32 +212,32 @@ model StoryView {
   storyId  String   @map("story_id")
   viewerId String   @map("viewer_id")
   viewedAt DateTime @default(now()) @map("viewed_at")
-
-  story Story @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  story    Story    @relation(fields: [storyId], references: [id], onDelete: Cascade)
 
   @@unique([storyId, viewerId])
   @@map("story_views")
 }
 
 model Reel {
-  id              String   @id @default(uuid())
-  authorId        String   @map("author_id")
-  videoUrl        String   @map("video_url")
-  thumbnailUrl    String?  @map("thumbnail_url")
+  id              String      @id @default(uuid())
+  authorId        String      @map("author_id")
+  videoUrl        String      @map("video_url")
+  thumbnailUrl    String?     @map("thumbnail_url")
   caption         String?
-  audioName       String?  @map("audio_name")
-  audioArtist     String?  @map("audio_artist")
-  audioCoverUrl   String?  @map("audio_cover_url")
-  isOriginalAudio Boolean  @default(true) @map("is_original_audio")
+  audioName       String?     @map("audio_name")
+  audioArtist     String?     @map("audio_artist")
+  audioCoverUrl   String?     @map("audio_cover_url")
+  isOriginalAudio Boolean     @default(true) @map("is_original_audio")
   duration        Float
-  likesCount      Int      @default(0) @map("likes_count")
-  commentsCount   Int      @default(0) @map("comments_count")
-  sharesCount     Int      @default(0) @map("shares_count")
-  viewsCount      Int      @default(0) @map("views_count")
-  createdAt       DateTime @default(now()) @map("created_at")
-
-  author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
-  likes  Like[]
+  likesCount      Int         @default(0) @map("likes_count")
+  commentsCount   Int         @default(0) @map("comments_count")
+  sharesCount     Int         @default(0) @map("shares_count")
+  viewsCount      Int         @default(0) @map("views_count")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  comments        Comment[]
+  likes           Like[]
+  author          User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  savedBy         SavedReel[]
 
   @@index([authorId])
   @@index([createdAt(sort: Desc)])
@@ -259,29 +245,27 @@ model Reel {
 }
 
 model Conversation {
-  id          String   @id @default(uuid())
-  isGroup     Boolean  @default(false) @map("is_group")
-  groupName   String?  @map("group_name")
-  groupAvatar String?  @map("group_avatar")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-
-  members  ConversationMember[]
-  messages Message[]
+  id          String               @id @default(uuid())
+  isGroup     Boolean              @default(false) @map("is_group")
+  groupName   String?              @map("group_name")
+  groupAvatar String?              @map("group_avatar")
+  createdAt   DateTime             @default(now()) @map("created_at")
+  updatedAt   DateTime             @updatedAt @map("updated_at")
+  members     ConversationMember[]
+  messages    Message[]
 
   @@map("conversations")
 }
 
 model ConversationMember {
-  id             String    @id @default(uuid())
-  conversationId String    @map("conversation_id")
-  userId         String    @map("user_id")
-  isMuted        Boolean   @default(false) @map("is_muted")
-  lastReadAt     DateTime? @map("last_read_at")
-  joinedAt       DateTime  @default(now()) @map("joined_at")
-
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String       @id @default(uuid())
+  conversationId String       @map("conversation_id")
+  userId         String       @map("user_id")
+  isMuted        Boolean      @default(false) @map("is_muted")
+  lastReadAt     DateTime?    @map("last_read_at")
+  joinedAt       DateTime     @default(now()) @map("joined_at")
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([conversationId, userId])
   @@index([userId])
@@ -301,13 +285,92 @@ model Message {
   replyToId      String?            @map("reply_to_id")
   status         MessageStatus      @default(SENT)
   createdAt      DateTime           @default(now()) @map("created_at")
-
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  sender       User         @relation("sender", fields: [senderId], references: [id], onDelete: Cascade)
+  conversation   Conversation       @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User               @relation("sender", fields: [senderId], references: [id], onDelete: Cascade)
 
   @@index([conversationId, createdAt(sort: Desc)])
   @@index([senderId])
   @@map("messages")
+}
+
+model Notification {
+  id               String           @id @default(uuid())
+  recipientId      String           @map("recipient_id")
+  actorId          String           @map("actor_id")
+  type             NotificationType
+  postId           String?          @map("post_id")
+  reelId           String?          @map("reel_id")
+  commentText      String?          @map("comment_text")
+  postThumbnailUrl String?          @map("post_thumbnail_url")
+  isRead           Boolean          @default(false) @map("is_read")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  actor            User             @relation("actor", fields: [actorId], references: [id], onDelete: Cascade)
+  recipient        User             @relation("recipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([recipientId, createdAt(sort: Desc)])
+  @@index([recipientId, isRead])
+  @@map("notifications")
+}
+
+model UserSettings {
+  userId           String   @id @map("user_id")
+  language         String   @default("en")
+  biometricEnabled Boolean  @default(true) @map("biometric_enabled")
+  pushEnabled      Boolean  @default(true) @map("push_enabled")
+  darkMode         Boolean  @default(false) @map("dark_mode")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+model CloseFriend {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  friendId  String   @map("friend_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  friend    User     @relation("friend", fields: [friendId], references: [id], onDelete: Cascade)
+  user      User     @relation("user", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, friendId])
+  @@index([userId])
+  @@index([friendId])
+  @@map("close_friends")
+}
+
+model SavedReel {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  reelId    String   @map("reel_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  reel      Reel     @relation(fields: [reelId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, reelId])
+  @@map("saved_reels")
+}
+
+model PendingUpload {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  storagePath String   @map("storage_path")
+  url         String
+  confirmed   Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([confirmed, createdAt])
+  @@map("pending_uploads")
+}
+
+enum DevicePlatform {
+  IOS
+  ANDROID
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
 }
 
 enum MessageContentType {
@@ -329,24 +392,6 @@ enum MessageStatus {
   FAILED
 }
 
-model Notification {
-  id          String           @id @default(uuid())
-  recipientId String           @map("recipient_id")
-  actorId     String           @map("actor_id")
-  type        NotificationType
-  postId      String?          @map("post_id")
-  commentText String?          @map("comment_text")
-  isRead      Boolean          @default(false) @map("is_read")
-  createdAt   DateTime         @default(now()) @map("created_at")
-
-  recipient User @relation("recipient", fields: [recipientId], references: [id], onDelete: Cascade)
-  actor     User @relation("actor", fields: [actorId], references: [id], onDelete: Cascade)
-
-  @@index([recipientId, createdAt(sort: Desc)])
-  @@index([recipientId, isRead])
-  @@map("notifications")
-}
-
 enum NotificationType {
   LIKE
   COMMENT
@@ -356,16 +401,4 @@ enum NotificationType {
   TAGGED_IN_POST
   STORY_MENTION
   LIVE_VIDEO
-}
-
-model PendingUpload {
-  id          String   @id @default(uuid())
-  userId      String   @map("user_id")
-  storagePath String   @map("storage_path")
-  url         String
-  confirmed   Boolean  @default(false)
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  @@index([confirmed, createdAt])
-  @@map("pending_uploads")
 }
