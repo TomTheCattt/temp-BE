@@ -9,3 +9,10 @@ coverage/
 .idea/
 firebase-service-account.json
 .neon
+
+# Neon generated files
+hello.ts
+neon.d.ts
+neon.d.ts.map
+neon.js
+neon.js.map
