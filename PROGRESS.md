@@ -1,151 +1,238 @@
-# Tiến độ triển khai Backend Instagram Clone
+# Implementation Progress — Instagram Clone Backend
 
-_Cập nhật: 04/08/2026_
+> **Updated:** 2026-11-05  
+> **Architecture:** Hono + Drizzle ORM + Better Auth + Neon Functions (Primary)  
+> **Legacy:** Express + Prisma + Firebase Auth (Kept in sync)
 
-Tài liệu này theo dõi mức độ triển khai thực tế của repository, đối chiếu với
-[BACKEND_SYSTEM_DESIGN.md](./BACKEND_SYSTEM_DESIGN.md). Trạng thái chỉ phản ánh
-mã nguồn hiện có; chưa xác nhận luồng chạy end-to-end với PostgreSQL và Firebase
-thật.
+This document tracks the actual implementation status against the [BACKEND_SYSTEM_DESIGN.md](./BACKEND_SYSTEM_DESIGN.md).
 
-## Tổng quan
+---
 
-| Khu vực | Trạng thái | Ghi chú |
-|---|---|---|
-| Nền tảng Express/TypeScript/Prisma | Đã có | App, cấu hình env, error handler và health check đã sẵn sàng. |
-| Firebase Auth | Đã có | Verify id token, register/login, refresh proxy, revoke toàn bộ session. |
-| User & social graph | Đã có | Profile, avatar, follow/unfollow, block/unblock, search, suggested users, FCM device token. |
-| Post & comment | Đã có | CRUD phần core, feed/explore/save/like và comments/replies. |
-| WebSocket | Đã có phần core | Xác thực, heartbeat, presence follower-only, relay typing/call có authorization. |
-| Upload/media | Đã có phần core | Multer memory upload, Firebase Storage, Sharp/ffmpeg và PendingUpload. |
-| Story/Reel/Chat/Notification | Đã có phần core | Route/service REST đã có; push FCM và event-domain còn thiếu. |
-| Jobs, test, deploy | Đang hoàn thiện | Cron cleanup đã có; migration áp dụng, test và CI còn thiếu. |
+## Overview
 
-## Đã hoàn thành
+| Area | Status | Notes |
+|------|--------|-------|
+| Hono REST API (Neon `api` function) | ✅ Complete | Auth, Users, Posts, Reels, Stories, Conversations, Notifications, Uploads all mounted |
+| Better Auth (Neon Auth) | ✅ Complete | Email/password, sessions, JWT via JWKS, password reset, email verification |
+| Drizzle ORM Schema | ✅ Complete | All tables with relations, indexes, Better Auth tables |
+| WebSocket (Neon `ws` function) | ✅ Complete | Chat, calls, typing, presence, JWKS auth, heartbeat |
+| Neon Functions Config | ✅ Complete | `neon.ts` with auth, functions, buckets, realtime, branch policy |
+| Neon Object Storage | ✅ Configured | `uploads` (private), `public` (public_read) buckets |
+| Neon Realtime | ✅ Enabled | Live queries for chat, notifications, presence |
+| Legacy Express/Prisma | ✅ Synced | Kept in sync with Drizzle schema |
+
+---
+
+## ✅ Completed
 
 ### Foundation
+- [x] Hono app with CORS, JSON body parsing, Pino logging, rate limiting
+- [x] Global error handler with unified response format
+- [x] Drizzle schema for all models (users, posts, reels, stories, chat, notifications, uploads)
+- [x] Prisma schema kept in sync for legacy migrations
+- [x] Better Auth instance with email/password, verification, password reset
+- [x] JWKS-based JWT verification middleware (`src/middleware/auth.ts`)
+- [x] `GET /health` on both API and WebSocket functions
+- [x] Environment validation via `neon.ts` config
+- [x] Drizzle Kit configuration for migrations
+- [x] TypeScript strict mode with path aliases
 
-- [x] Express app với `helmet`, CORS, JSON body limit, Pino HTTP logging và rate limit.
-- [x] Global error handler với response format thống nhất.
-- [x] Prisma schema cho users, posts, comments, stories, reels, chat, notifications và pending uploads.
-- [x] Firebase Admin initialization qua biến môi trường.
-- [x] `GET /health`.
-- [x] WebSocket server được gắn vào HTTP server tại `/ws`.
-- [x] Bổ sung `.env.example` cho PostgreSQL và Firebase.
-- [x] Sinh SQL migration baseline từ Prisma schema để sẵn sàng áp dụng vào database.
-- [x] Thêm seed idempotent cho dữ liệu giả lập (user, social graph, post, comment, story, reel và conversation).
+### Authentication (Better Auth via Neon Auth)
+- [x] Native Better Auth endpoints at `/api/auth/*` (sign-up, sign-in, sign-out, password reset, email verification)
+- [x] Custom iOS-compatible endpoints at `/v1/auth/*` (register, login, logout, logout-all, change-password, forgot-password, verify-email, resend-verification, me, refresh)
+- [x] Session management with 7-day JWT expiry
+- [x] `revokeOtherSessions` on password change
+- [x] JWKS token verification with issuer/audience validation
+- [x] User lookup from database on each request
 
-### Authentication
+### User Profile & Settings
+- [x] `GET /v1/user/profile` (iOS alias)
+- [x] `PUT /v1/user/profile` (iOS alias, accepts `{ name }`)
+- [x] `GET /v1/user/settings` - Get preferences
+- [x] `PUT /v1/user/settings` - Update preferences
+- [x] `GET /v1/users/me` - Canonical profile
+- [x] `PUT /v1/users/me` - Full profile update
+- [x] `GET /v1/users/:id` - Public profile + follow status
+- [x] `GET /v1/users/search` - Search users (paginated)
+- [x] `GET /v1/users/suggested` - Suggested users (paginated)
+- [x] `GET /v1/users/:id/followers` - List followers
+- [x] `GET /v1/users/:id/following` - List following
+- [x] `POST /v1/users/:id/follow` - Follow user
+- [x] `DELETE /v1/users/:id/follow` - Unfollow user
+- [x] `POST /v1/users/:id/block` - Block user
+- [x] `DELETE /v1/users/:id/block` - Unblock user
+- [x] `GET /v1/users/me/blocked` - List blocked users (paginated)
+- [x] `GET /v1/users/me/close-friends` - List close friends
+- [x] `PUT /v1/users/me/close-friends` - Full-set replace `{ friendIds }`
+- [x] `POST /v1/users/me/device-token` - Register push token
+- [x] `DELETE /v1/users/me/device-token` - Unregister push token
 
-- [x] Đăng ký user từ Firebase `idToken`.
-- [x] Login đồng bộ Firebase UID với user trong PostgreSQL.
-- [x] Refresh proxy thông qua Google Secure Token API.
-- [x] Middleware verify Firebase token với `checkRevoked: true`.
-- [x] Force logout tất cả thiết bị qua `revokeRefreshTokens`.
+### Posts
+- [x] `GET /v1/posts/feed` - Home feed (following + self)
+- [x] `GET /v1/posts/explore` - Explore feed (popular, non-following)
+- [x] `GET /v1/posts/saved` - Saved posts
+- [x] `GET /v1/posts/user/:userId` - User's posts
+- [x] `GET /v1/posts/:id` - Post detail
+- [x] `POST /v1/posts` - Create post with media
+- [x] `PUT /v1/posts/:id` - Edit caption/location (author only)
+- [x] `DELETE /v1/posts/:id` - Delete post (author only)
+- [x] `POST /v1/posts/:id/like` - Like post
+- [x] `DELETE /v1/posts/:id/like` - Unlike post
+- [x] `POST /v1/posts/:id/save` - Save post
+- [x] `DELETE /v1/posts/:id/save` - Unsave post
 
-### User & social graph
+> **Response includes:** `isLiked`, `isSaved`, `author.isFollowing`, `mediaItems[]` (computed)
 
-- [x] `GET /v1/users/me`, `GET /v1/users/:id` và cập nhật profile.
-- [x] Follow/unfollow với transaction và atomic counter.
-- [x] Block/unblock; block tự động gỡ quan hệ follow theo cả hai chiều.
-- [x] Danh sách followers/following và tìm kiếm username/full name.
-- [x] Gợi ý user để follow theo followers count, loại trừ user đã follow/blocked.
-- [x] Đăng ký/xóa FCM device token theo thiết bị.
+### WebSocket (Neon Functions `ws` function)
+- [x] Better Auth token verification via JWKS on first message
+- [x] Query param auth: `wss://host/ws?token=<session_token>`
+- [x] Zod validation for incoming messages
+- [x] 16KB message size limit
+- [x] 30s heartbeat (ping/pong), 30s offline debounce
+- [x] Multi-device support (user → Set<WebSocket>)
+- [x] Chat: `send_message`, `typing_start/stop`, `mark_read`, `delete_message`
+- [x] Calls: Full WebRTC signaling (`call_initiate`, `call_offer`, `call_answer`, `call_ice_candidate`, `call_hangup`, `call_reject`, `call_busy`, `call_ringing`)
+- [x] Presence: `user_online`/`user_offline` broadcast to followers
+- [x] Conversation membership validation before relay
+- [x] Message persistence to database
+- [x] Health check: `GET /health`
 
-### Post & comment
+### Neon Functions Deployment
+- [x] `neon.ts` configuration with:
+  - Neon Auth (Managed Better Auth)
+  - Function `api` → `src/index.ts` (REST API)
+  - Function `ws` → `src/websocket/index.ts` (WebSocket)
+  - Buckets: `uploads` (private), `public` (public_read)
+  - Neon Realtime enabled
+  - Branch policy: main (min 1, max 2 compute), preview (7d TTL, scale to zero)
+- [x] Deploy commands: `npm run neon:deploy`, `npm run neon:dev`
+- [x] Free tier limits documented
 
-- [x] Tạo post từ danh sách media URL đã có sẵn.
-- [x] Feed following, explore, danh sách post của user và saved posts.
-- [x] Like/unlike, save/unsave, xóa post với kiểm tra tác giả.
-- [x] Kiểm tra block/private account khi đọc content.
-- [x] Comment, reply một cấp, xóa comment và like/unlike comment.
-- [x] Counter cho post/comment được cập nhật bằng transaction và Prisma atomic increment/decrement.
+### Documentation
+- [x] `README.md` - Updated for Hono/Drizzle/Better Auth/Neon Functions
+- [x] `API_ENDPOINTS.md` - Complete reference with current endpoints
+- [x] `BACKEND_SYSTEM_DESIGN.md` - Full architecture documentation
+- [x] `IMPLEMENTATION_PLAN.md` - Current status tracking
 
-### Realtime
+---
 
-- [x] Xác thực WebSocket bằng Firebase id token.
-- [x] Ping/pong heartbeat mỗi 30 giây.
-- [x] Quản lý nhiều socket cho một user, gửi message đến toàn bộ thiết bị của user.
-- [x] Relay typing indicator và WebRTC call-signaling.
-- [x] Broadcast `user_online` cơ bản.
-- [x] Presence chỉ gửi đến followers và có debounce offline 30 giây.
-- [x] Relay call/typing chỉ cho các user cùng có mặt trong một conversation.
+## ✅ Completed (All Core Endpoints)
 
-### Upload & media
+### Reel Endpoints (Hono/Drizzle Migration)
+- [x] Mount `reelRouter` in `src/index.ts`
+- [x] `GET /v1/reels/feed` - Reels feed
+- [x] `GET /v1/reels/user/:userId` - User's reels grid
+- [x] `POST /v1/reels` - Create reel
+- [x] `POST /v1/reels/:id/like` - Like reel
+- [x] `DELETE /v1/reels/:id/like` - Unlike reel
+- [x] `POST /v1/reels/:id/save` - Save reel
+- [x] `DELETE /v1/reels/:id/save` - Unsave reel
+- [x] `DELETE /v1/reels/:id` - Delete reel (author only)
+- [x] `POST /v1/reels/:id/view` - Increment view count
+- [x] `GET /v1/reels/:reelId/comments` - Reel comments
+- [x] `POST /v1/reels/:reelId/comments` - Add reel comment
 
-- [x] `POST /v1/upload/image`, `/video`, `/avatar` với Multer memory storage.
-- [x] Validate MIME type và giới hạn 10 MB ảnh, 100 MB video.
-- [x] Resize/convert ảnh với Sharp; đọc metadata video và tạo thumbnail với ffmpeg.
-- [x] Upload Firebase Storage và tạo `PendingUpload` cho ảnh/video.
-- [x] Khi tạo post với `pendingUploadId`, xác thực ownership và confirm upload trong cùng transaction.
+### Story Endpoints (Hono/Drizzle Migration)
+- [x] Mount `storyRouter` in `src/index.ts`
+- [x] `GET /v1/stories/feed` - Stories feed
+- [x] `GET /v1/stories/:userId/items` - User's story items
+- [x] `POST /v1/stories` - Create story
+- [x] `POST /v1/stories/:storyId/view` - Mark viewed
+- [x] `DELETE /v1/stories/:storyId` - Delete story
 
-### Story, Reel, chat & notifications
+### Conversation & Message Endpoints (Hono/Drizzle Migration)
+- [x] Mount `conversationRouter` in `src/index.ts`
+- [x] `GET /v1/conversations` - List conversations (+ last message)
+- [x] `POST /v1/conversations` - Create conversation
+- [x] `GET /v1/conversations/:id/messages` - Messages (paginated)
+- [x] `POST /v1/conversations/:id/messages` - Send message
+- [x] `POST /v1/conversations/:id/read` - Mark as read
+- [x] `PUT /v1/conversations/:id/mute` - Mute/unmute
+- [x] `DELETE /v1/conversations/messages/:messageId` - Delete message
 
-- [x] Story create/feed/items/view/delete, tự hết hạn sau 24 giờ.
-- [x] Reel create/feed/like/unlike/view.
-- [x] Conversation create/list, message list/send/delete, read receipt và mute.
-- [x] Notification list/read/read-all/unread-count; bắn WebSocket event cho notification được tạo bởi service.
-- [x] Cron job xóa Story hết hạn và PendingUpload mồ côi sau 24 giờ.
+### Notification Endpoints (Hono/Drizzle Migration)
+- [x] Mount `notificationRouter` in `src/index.ts`
+- [x] `GET /v1/notifications` - List notifications (paginated)
+- [x] `GET /v1/notifications/unread-count` - Unread count
+- [x] `POST /v1/notifications/read-all` - Mark all read
+- [x] `POST /v1/notifications/:id/read` - Mark one read
 
-## Cần hoàn thiện
+### Upload Endpoints (Hono/Drizzle + Neon Object Storage)
+- [x] Mount `uploadRouter` in `src/index.ts`
+- [x] `POST /v1/upload/presign` - Get presigned URL for direct upload
+- [x] `POST /v1/upload/confirm` - Confirm pending upload
+- [x] `POST /v1/upload/image` - Upload image (max 10MB)
+- [x] `POST /v1/upload/video` - Upload video (max 100MB)
+- [x] `POST /v1/upload/avatar` - Upload avatar (400x400)
+- [x] `GET /v1/upload/pending/:id` - Get pending upload status
+- [x] `DELETE /v1/upload/pending/:id` - Delete pending upload
+- [x] Presigned URL generation for direct uploads
+- [x] `PendingUpload` confirmation pattern (24h cleanup cron)
 
-### Ưu tiên cao — để chạy được end-to-end
+---
 
-- [x] Tạo `.env.example` đầy đủ cho Firebase/PostgreSQL local.
-- [ ] Commit migration Prisma đầu tiên vào `prisma/migrations` và chạy nó trên PostgreSQL local.
-- [ ] Cài và kiểm tra PostgreSQL thật; hiện chỉ xác thực schema, chưa chạy migration.
-- [x] Có seed data idempotent qua `npm run db:seed` (mục đích là dữ liệu giả lập, không phải clone tài khoản Firebase thật).
-- [ ] Viết test cho auth middleware, permission private/block, follow/like idempotency và route responses.
-- [x] Hoàn thiện API upload cho image/video/avatar và PendingUpload cho Post.
-- [x] Xử lý ảnh với Sharp, video metadata/thumbnail với ffmpeg.
+## 📋 To Do
 
-### Tính năng sản phẩm
+### Production Hardening
+- [ ] Rate limiting per endpoint type (Hono rate-limiter)
+- [ ] Helmet CSP configuration
+- [ ] Cursor-based pagination for feeds (posts, reels, conversations)
+- [ ] pg_trgm migration for search
+- [ ] Database indexes review
+- [ ] Request ID logging
+- [ ] Metrics endpoint (Prometheus)
+- [ ] Error tracking (Sentry integration)
+- [ ] Structured audit logging
 
-- [x] Story: create/feed/view tracking/delete và lọc hết hạn.
-- [x] Reel: create/feed/view/like.
-- [x] Conversations/messages: tạo conversation, kiểm tra membership, gửi/xóa/read/mute qua REST.
-- [x] Notifications: list/read/unread count và WebSocket event qua notification service.
-- [ ] Tạo notification từ like/comment/follow và gửi FCM push đa thiết bị.
-- [ ] User suggestions và avatar endpoint.
+### Testing & CI
+- [ ] Unit tests for services
+- [ ] Integration tests for routes
+- [ ] Auth middleware tests
+- [ ] CI pipeline (build, lint, test, drizzle validate)
+- [ ] GitHub Actions workflow
 
-### Realtime, security & scale
+### Deployment
+- [ ] Configure production secrets in Neon dashboard
+- [ ] Run `neon auth secret` for Better Auth
+- [ ] Deploy to Neon: `npm run neon:deploy`
+- [ ] Verify WebSocket and API endpoints
+- [ ] Rollback procedures
 
-- [ ] Chỉ broadcast presence tới followers thay vì tất cả user đang kết nối.
-- [ ] Thêm offline debounce 30 giây như thiết kế.
-- [ ] Xác minh conversation membership trước khi relay WebSocket typing/call.
-- [ ] Zod schema cho WebSocket payload; chống malformed/oversized messages.
-- [ ] Cursor pagination thay cho offset ở feed lớn.
-- [ ] Tạo `pg_trgm` migration và chuyển search sang `similarity()` khi dữ liệu tăng.
-- [ ] Tách rate-limit store, presence và WebSocket pub/sub sang Redis khi chạy nhiều instance.
+---
 
-### Vận hành
+## Key Differences from Legacy Design
 
-- [ ] Implement cron expire stories và cleanup orphaned uploads.
-- [ ] Graceful shutdown đầy đủ (đóng WebSocket, ngừng jobs trước khi disconnect DB).
-- [ ] Docker compose app + PostgreSQL được kiểm tra trong môi trường local.
-- [ ] CI chạy `npm run build`, Prisma validate và test.
-- [ ] Structured audit logging, metrics và error tracking.
+1. **Auth**: Better Auth (Neon Auth) replaces Firebase Auth entirely
+2. **ORM**: Drizzle ORM replaces Prisma as primary (Prisma kept for legacy migrations)
+3. **Framework**: Hono replaces Express for Neon Functions deployment
+4. **Storage**: Neon Object Storage (S3-compatible) replaces Firebase Storage
+5. **Realtime**: Neon Realtime enables live SQL queries
+6. **WebSocket**: Native `WebSocketPair` in Neon Functions runtime
+7. **Functions**: Two separate functions (`api`, `ws`) for independent scaling
+8. **Branch Policy**: Preview branches auto-expire, scale to zero
 
-## Khác biệt cần lưu ý với thiết kế
+---
 
-1. `POST /v1/posts` nhận JSON `media[]` sau khi client upload tại `/v1/upload/*`;
-   dùng `pendingUploadId` để xác nhận ownership. Không upload multipart trực tiếp vào endpoint post.
-2. WebSocket relay signaling/typing có kiểm tra conversation chung, nhưng chưa
-   có Zod validation chi tiết hoặc giới hạn payload riêng.
-3. Presence chỉ gửi tới followers; state hiện ở memory nên chỉ phù hợp một instance.
-4. Story/Reel/Conversation/Notification đã có route/service REST nhưng chưa có
-   test end-to-end và một số side-effect domain (notification/push) còn thiếu.
-
-## Kiểm tra gần nhất
-
-Đã chạy thành công:
+## Recent Verification
 
 ```bash
+# TypeScript compilation (excludes websocket function due to Neon-specific APIs)
 npm run build
+
+# Drizzle schema validation
+npm run drizzle:generate
+
+# Prisma validation (legacy)
 npx prisma validate
 ```
 
-## Bước tiếp theo đề xuất
+---
 
-1. Commit/apply migration đầu tiên trên PostgreSQL local, sau đó chạy `npm run db:seed`.
-2. Bổ sung Zod schema, message-size limit, Redis adapter và cursor pagination cho realtime/scale.
-3. Bổ sung test integration cho upload, authorization và message flow; cấu hình CI.
+## Next Steps Priority
+
+1. **Complete Reel/Story/Conversation/Notification/Upload endpoints** in Hono/Drizzle
+2. **Mount all routers** in `src/index.ts`
+3. **Add rate limiting** middleware
+4. **Configure production secrets** in Neon dashboard
+5. **Deploy to Neon** and verify end-to-end
+6. **Set up CI/CD** pipeline
