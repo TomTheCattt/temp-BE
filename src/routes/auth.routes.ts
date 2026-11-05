@@ -1,70 +1,380 @@
-import { Router } from 'express';
-import { z } from 'zod';
-import { validateBody } from '../middleware/validate';
-import { authMiddleware, AuthenticatedRequest } from '../middleware/auth';
-import * as authService from '../services/auth.service';
+import { Hono } from "hono";
+import { zValidator } from "@hono/zod-validator";
+import { z } from "zod";
+import { auth } from "../config/auth";
+import { authMiddleware, getCurrentUser } from "../middleware/auth";
+import { db } from "../index";
+import * as schema from "../db/schema";
+import { eq } from "drizzle-orm";
+import { HTTPException } from "hono/http-exception";
 
-const router = Router();
-
+// Validation schemas
 const registerSchema = z.object({
-  idToken: z.string().min(1),
-  name: z.string().min(1).max(100),
+  email: z.string().email(),
+  password: z.string().min(8).max(128),
+  username: z.string().min(3).max(50).regex(/^[a-zA-Z0-9_.]+$/),
+  fullName: z.string().min(1).max(100),
   phone: z.string().optional(),
 });
 
 const loginSchema = z.object({
-  idToken: z.string().min(1),
+  email: z.string().email(),
+  password: z.string(),
 });
 
-const refreshSchema = z.object({
-  refreshToken: z.string().min(1),
+const changePasswordSchema = z.object({
+  currentPassword: z.string(),
+  newPassword: z.string().min(8).max(128),
 });
 
-router.post('/register', validateBody(registerSchema), async (req, res, next) => {
-  try {
-    const { idToken, name, phone } = req.body;
-    const user = await authService.register(idToken, name, phone);
-    res.status(201).json({ success: true, data: { user } });
-  } catch (err) {
-    next(err);
+// Create auth router
+const authRouter = new Hono();
+
+// Mount Better Auth handler for all standard auth endpoints
+// This handles: signUp, signIn, signOut, password reset, email verification, etc.
+// The handler is available at auth.handler
+authRouter.on(["POST", "GET"], "/api/auth/*", async (c) => {
+  return auth.handler(c.req.raw);
+});
+
+// Custom register endpoint that adds username
+authRouter.post(
+  "/register",
+  zValidator("json", registerSchema),
+  async (c) => {
+    try {
+      const { email, password, username, fullName, phone } = c.req.valid("json");
+
+      // Check if username is taken
+      const existingUser = await db.query.users.findFirst({
+        where: eq(schema.users.username, username),
+      });
+      if (existingUser) {
+        throw new HTTPException(409, {
+          message: "Username already taken",
+          res: c.json({ success: false, error: "USERNAME_TAKEN", message: "Username already taken" }),
+        });
+      }
+
+      // Use Better Auth to sign up
+      // Additional fields (username, fullName, phone) are passed in the body
+      // They are stored in the user's data field in Better Auth
+      const result = await auth.api.signUpEmail({
+        body: {
+          email,
+          password,
+          name: fullName,
+          fullName,
+          username,
+          phone,
+        },
+      });
+
+      if (!result?.user) {
+        throw new HTTPException(500, {
+          message: "Registration failed",
+          res: c.json({ success: false, error: "REGISTRATION_FAILED", message: "Failed to create account" }),
+        });
+      }
+
+      // Get full user data from our database
+      const user = await db.query.users.findFirst({
+        where: eq(schema.users.id, result.user.id),
+      });
+
+      return c.json({
+        success: true,
+        data: {
+          user: user ? {
+            id: user.id,
+            username: user.username,
+            fullName: user.fullName,
+            email: user.email,
+            phone: user.phone,
+            avatarUrl: user.avatarUrl,
+            bio: user.bio,
+            website: user.website,
+            isVerified: user.isVerified,
+            isPrivate: user.isPrivate,
+            postsCount: user.postsCount,
+            followersCount: user.followersCount,
+            followingCount: user.followingCount,
+            createdAt: user.createdAt,
+          } : {
+            id: result.user.id,
+            username,
+            fullName,
+            email: result.user.email,
+            phone,
+            avatarUrl: result.user.image,
+            bio: null,
+            website: null,
+            isVerified: result.user.emailVerified,
+            isPrivate: false,
+            postsCount: 0,
+            followersCount: 0,
+            followingCount: 0,
+            createdAt: result.user.createdAt,
+          },
+        },
+      }, 201);
+    } catch (error) {
+      if (error instanceof HTTPException) throw error;
+      console.error("[Auth] Register error:", error);
+      throw new HTTPException(500, {
+        message: "Registration failed",
+        res: c.json({ success: false, error: "REGISTRATION_FAILED", message: "Failed to create account" }),
+      });
+    }
   }
-});
+);
 
-router.post('/login', validateBody(loginSchema), async (req, res, next) => {
-  try {
-    const { idToken } = req.body;
-    const user = await authService.login(idToken);
-    res.json({ success: true, data: { user } });
-  } catch (err) {
-    next(err);
+// Login endpoint - handled by Better Auth handler at /api/auth/sign-in/email
+// We'll keep a simple proxy for iOS compatibility
+authRouter.post(
+  "/login",
+  zValidator("json", loginSchema),
+  async (c) => {
+    try {
+      const { email, password } = c.req.valid("json");
+
+      const result = await auth.api.signInEmail({
+        body: { email, password },
+      });
+
+      if (!result?.user) {
+        throw new HTTPException(401, {
+          message: "Invalid credentials",
+          res: c.json({ success: false, error: "INVALID_CREDENTIALS", message: "Invalid email or password" }),
+        });
+      }
+
+      // Get full user data from our database
+      const user = await db.query.users.findFirst({
+        where: eq(schema.users.id, result.user.id),
+      });
+
+      return c.json({
+        success: true,
+        data: {
+          user: user ? {
+            id: user.id,
+            username: user.username,
+            fullName: user.fullName,
+            email: user.email,
+            phone: user.phone,
+            avatarUrl: user.avatarUrl,
+            bio: user.bio,
+            website: user.website,
+            isVerified: user.isVerified,
+            isPrivate: user.isPrivate,
+            postsCount: user.postsCount,
+            followersCount: user.followersCount,
+            followingCount: user.followingCount,
+            createdAt: user.createdAt,
+          } : {
+            id: result.user.id,
+            username: result.user.name,
+            fullName: result.user.name,
+            email: result.user.email,
+            phone: null,
+            avatarUrl: result.user.image,
+            bio: null,
+            website: null,
+            isVerified: result.user.emailVerified,
+            isPrivate: false,
+            postsCount: 0,
+            followersCount: 0,
+            followingCount: 0,
+            createdAt: result.user.createdAt,
+          },
+        },
+      });
+    } catch (error) {
+      if (error instanceof HTTPException) throw error;
+      console.error("[Auth] Login error:", error);
+      throw new HTTPException(401, {
+        message: "Invalid credentials",
+        res: c.json({ success: false, error: "INVALID_CREDENTIALS", message: "Invalid email or password" }),
+      });
+    }
   }
-});
+);
 
-router.post('/refresh', validateBody(refreshSchema), async (req, res, next) => {
-  try {
-    const { refreshToken } = req.body;
-    const tokens = await authService.refreshToken(refreshToken);
-    res.json({ success: true, data: tokens });
-  } catch (err) {
-    next(err);
+// Logout endpoint
+authRouter.post(
+  "/logout",
+  authMiddleware,
+  async (c) => {
+    try {
+      await auth.api.signOut({
+        headers: c.req.raw.headers,
+      });
+      return c.json({ success: true, data: { message: "Logged out successfully" } });
+    } catch (error) {
+      console.error("[Auth] Logout error:", error);
+      return c.json({ success: true, data: { message: "Logged out" } });
+    }
   }
-});
+);
 
-router.post('/logout-all-devices', authMiddleware, async (req, res, next) => {
-  try {
-    const { user } = req as AuthenticatedRequest;
-    await authService.revokeAllSessions(user.firebaseUid);
-    res.status(204).send();
-  } catch (err) {
-    next(err);
+// Logout all devices
+authRouter.post(
+  "/logout-all-devices",
+  authMiddleware,
+  async (c) => {
+    try {
+      // revokeSessions doesn't take a body, just uses the current session from headers
+      await auth.api.revokeSessions({
+        headers: c.req.raw.headers,
+      });
+      return c.json({ success: true, data: { message: "Logged out from all devices" } });
+    } catch (error) {
+      console.error("[Auth] Logout all error:", error);
+      throw new HTTPException(500, {
+        message: "Failed to logout from all devices",
+        res: c.json({ success: false, error: "LOGOUT_FAILED", message: "Failed to logout from all devices" }),
+      });
+    }
   }
-});
+);
 
-router.post('/change-password', authMiddleware, (_req, res) => {
-  res.json({
-    success: true,
-    message: 'Use Firebase Auth SDK updatePassword() on the client side',
-  });
-});
+// Change password
+authRouter.post(
+  "/change-password",
+  authMiddleware,
+  zValidator("json", changePasswordSchema),
+  async (c) => {
+    try {
+      const { currentPassword, newPassword } = c.req.valid("json");
 
-export default router;
+      await auth.api.changePassword({
+        body: {
+          currentPassword,
+          newPassword,
+          revokeOtherSessions: true,
+        },
+        headers: c.req.raw.headers,
+      });
+
+      return c.json({ success: true, data: { message: "Password changed successfully" } });
+    } catch (error) {
+      if (error instanceof HTTPException) throw error;
+      console.error("[Auth] Change password error:", error);
+      throw new HTTPException(400, {
+        message: "Failed to change password",
+        res: c.json({ success: false, error: "PASSWORD_CHANGE_FAILED", message: "Current password is incorrect" }),
+      });
+    }
+  }
+);
+
+// Forgot password
+authRouter.post(
+  "/forgot-password",
+  zValidator("json", z.object({ email: z.string().email() })),
+  async (c) => {
+    try {
+      const { email } = c.req.valid("json");
+      await auth.api.requestPasswordReset({
+        body: { email, redirectTo: `${process.env.CORS_ORIGIN}/reset-password` },
+      });
+      return c.json({ success: true, data: { message: "Password reset email sent" } });
+    } catch (error) {
+      console.error("[Auth] Forgot password error:", error);
+      return c.json({ success: true, data: { message: "If the email exists, a reset link has been sent" } });
+    }
+  }
+);
+
+// Verify email
+authRouter.post(
+  "/verify-email",
+  zValidator("json", z.object({ token: z.string() })),
+  async (c) => {
+    try {
+      const { token } = c.req.valid("json");
+      await auth.api.verifyEmail({ query: { token } });
+      return c.json({ success: true, data: { message: "Email verified successfully" } });
+    } catch (error) {
+      console.error("[Auth] Verify email error:", error);
+      throw new HTTPException(400, {
+        message: "Invalid or expired verification token",
+        res: c.json({ success: false, error: "INVALID_TOKEN", message: "Invalid or expired verification token" }),
+      });
+    }
+  }
+);
+
+// Resend verification email
+authRouter.post(
+  "/resend-verification",
+  zValidator("json", z.object({ email: z.string().email() })),
+  async (c) => {
+    try {
+      const { email } = c.req.valid("json");
+      await auth.api.sendVerificationEmail({ body: { email } });
+      return c.json({ success: true, data: { message: "Verification email sent" } });
+    } catch (error) {
+      console.error("[Auth] Resend verification error:", error);
+      return c.json({ success: true, data: { message: "If the email exists, a verification email has been sent" } });
+    }
+  }
+);
+
+// Get current user profile (protected)
+authRouter.get(
+  "/me",
+  authMiddleware,
+  async (c) => {
+    const user = getCurrentUser(c);
+    return c.json({
+      success: true,
+      data: {
+        user: {
+          id: user.id,
+          username: user.username,
+          fullName: user.fullName,
+          email: user.email,
+          phone: user.phone,
+          avatarUrl: user.avatarUrl,
+          bio: user.bio,
+          website: user.website,
+          isVerified: user.isVerified,
+          isPrivate: user.isPrivate,
+          postsCount: user.postsCount,
+          followersCount: user.followersCount,
+          followingCount: user.followingCount,
+          createdAt: user.createdAt,
+        },
+      },
+    });
+  }
+);
+
+// Refresh session
+authRouter.post(
+  "/refresh",
+  async (c) => {
+    try {
+      const session = await auth.api.getSession({
+        headers: c.req.raw.headers,
+      });
+      if (!session) {
+        throw new HTTPException(401, {
+          message: "No valid session",
+          res: c.json({ success: false, error: "NO_SESSION", message: "No valid session" }),
+        });
+      }
+      return c.json({ success: true, data: { session } });
+    } catch (error) {
+      if (error instanceof HTTPException) throw error;
+      throw new HTTPException(401, {
+        message: "Session expired",
+        res: c.json({ success: false, error: "SESSION_EXPIRED", message: "Session expired, please login again" }),
+      });
+    }
+  }
+);
+
+export { authRouter };

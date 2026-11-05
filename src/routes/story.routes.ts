@@ -1,6 +1,237 @@
-import { Router } from 'express'; import { MediaType } from '@prisma/client'; import { z } from 'zod'; import { authMiddleware, AuthenticatedRequest } from '../middleware/auth'; import { validateBody } from '../middleware/validate'; import * as stories from '../services/story.service';
-const router = Router(); router.use(authMiddleware); const wrap = (handler: (req: AuthenticatedRequest, res: any) => Promise<void>) => (req: any, res: any, next: any) => handler(req, res).catch(next); const createSchema = z.object({ mediaUrl: z.string().url(), type: z.nativeEnum(MediaType), duration: z.number().positive().max(60).optional(), stickerType: z.string().max(50).optional(), stickerData: z.string().max(5000).optional() });
-router.get('/feed', wrap(async (req, res) => res.json({ success: true, data: { items: await stories.feed(req.user.id) } })));
-router.get('/:userId/items', wrap(async (req, res) => res.json({ success: true, data: { stories: await stories.items(req.user.id, String(req.params.userId)) } })));
-router.post('/', validateBody(createSchema), wrap(async (req, res) => res.status(201).json({ success: true, data: { story: await stories.createStory(req.user.id, req.body) } })));
-router.post('/:storyId/view', wrap(async (req, res) => { await stories.view(req.user.id, String(req.params.storyId)); res.status(204).send(); })); router.delete('/:storyId', wrap(async (req, res) => { await stories.deleteStory(req.user.id, String(req.params.storyId)); res.status(204).send(); })); export default router;
+import { Hono } from "hono";
+import { zValidator } from "@hono/zod-validator";
+import { z } from "zod";
+import { authMiddleware, getCurrentUser } from "../middleware/auth";
+import { db } from "../index";
+import * as schema from "../db/schema";
+import { eq, and, desc, asc, count, sql, inArray, lt } from "drizzle-orm";
+import { HTTPException } from "hono/http-exception";
+
+const createStorySchema = z.object({
+  mediaUrl: z.string().url(),
+  type: z.enum(["IMAGE", "VIDEO"]),
+  duration: z.number().positive().max(60).default(5),
+  stickerType: z.string().max(50).optional(),
+  stickerData: z.string().optional(),
+});
+
+function getPagination(c: any) {
+  const page = Number(c.req.query("page")) || 1;
+  const perPage = Math.min(Number(c.req.query("perPage")) || 20, 50);
+  return { page, perPage, offset: (page - 1) * perPage };
+}
+
+const storyRouter = new Hono();
+storyRouter.use("*", authMiddleware);
+
+// GET /v1/stories/feed - Stories feed (active stories from self + following)
+storyRouter.get("/feed", async (c) => {
+  const user = getCurrentUser(c);
+
+  const following = await db.select({ followingId: schema.follows.followingId }).from(schema.follows).where(eq(schema.follows.followerId, user.id));
+  const followingIds = following.map((f) => f.followingId);
+  followingIds.push(user.id);
+
+  const blocked = await db.select({ blockedId: schema.blocks.blockedId }).from(schema.blocks).where(eq(schema.blocks.blockerId, user.id));
+  const blockedIds = blocked.map((b) => b.blockedId);
+
+  const now = new Date();
+
+  // Get active stories from following
+  const activeStories = await db
+    .select({
+      id: schema.stories.id,
+      authorId: schema.stories.authorId,
+      createdAt: schema.stories.createdAt,
+      expiresAt: schema.stories.expiresAt,
+      author: {
+        id: schema.users.id,
+        username: schema.users.username,
+        fullName: schema.users.fullName,
+        avatarUrl: schema.users.avatarUrl,
+        isVerified: schema.users.isVerified,
+      },
+      items: sql`(SELECT json_agg(json_build_object('id', si.id, 'mediaUrl', si.media_url, 'type', si.type, 'duration', si.duration, 'sortOrder', si.sort_order, 'stickerType', si.sticker_type, 'stickerData', si.sticker_data) ORDER BY si.sort_order) FROM story_items si WHERE si.story_id = stories.id)`,
+    })
+    .from(schema.stories)
+    .innerJoin(schema.users, eq(schema.users.id, schema.stories.authorId))
+    .where(
+      and(
+        inArray(schema.stories.authorId, followingIds),
+        sql`${schema.stories.expiresAt} > ${now}`,
+        sql`${schema.stories.authorId} NOT IN (${blockedIds.length > 0 ? blockedIds : sql`SELECT 1 WHERE FALSE`})`
+      )
+    )
+    .orderBy(desc(schema.stories.createdAt));
+
+  // Group by author
+  const storiesByAuthor = new Map<string, any[]>();
+  for (const story of activeStories) {
+    const authorId = story.authorId;
+    if (!storiesByAuthor.has(authorId)) {
+      storiesByAuthor.set(authorId, []);
+    }
+    storiesByAuthor.get(authorId)!.push(story);
+  }
+
+  const items = Array.from(storiesByAuthor.entries()).map(([authorId, stories]) => ({
+    userId: authorId,
+    author: stories[0].author,
+    stories: stories.map((s) => ({
+      id: s.id,
+      createdAt: s.createdAt,
+      expiresAt: s.expiresAt,
+      items: s.items || [],
+    })),
+  }));
+
+  return c.json({ success: true, data: { items } });
+});
+
+// GET /v1/stories/:userId/items - User's story items (with view status)
+storyRouter.get("/:userId/items", async (c) => {
+  const user = getCurrentUser(c);
+  const targetId = c.req.param("userId");
+
+  const targetUser = await db.query.users.findFirst({
+    where: eq(schema.users.id, targetId),
+    columns: { id: true, isPrivate: true },
+  });
+
+  if (!targetUser) {
+    throw new HTTPException(404, { message: "User not found" });
+  }
+
+  if (targetUser.isPrivate && targetId !== user.id) {
+    const following = await db.query.follows.findFirst({
+      where: and(eq(schema.follows.followerId, user.id), eq(schema.follows.followingId, targetId)),
+    });
+    if (!following) {
+      throw new HTTPException(403, { message: "This account is private" });
+    }
+  }
+
+  const now = new Date();
+
+  const stories = await db
+    .select({
+      id: schema.stories.id,
+      authorId: schema.stories.authorId,
+      createdAt: schema.stories.createdAt,
+      expiresAt: schema.stories.expiresAt,
+      author: {
+        id: schema.users.id,
+        username: schema.users.username,
+        fullName: schema.users.fullName,
+        avatarUrl: schema.users.avatarUrl,
+        isVerified: schema.users.isVerified,
+      },
+      items: sql`(SELECT json_agg(json_build_object('id', si.id, 'mediaUrl', si.media_url, 'type', si.type, 'duration', si.duration, 'sortOrder', si.sort_order, 'stickerType', si.sticker_type, 'stickerData', si.sticker_data) ORDER BY si.sort_order) FROM story_items si WHERE si.story_id = stories.id)`,
+    })
+    .from(schema.stories)
+    .innerJoin(schema.users, eq(schema.users.id, schema.stories.authorId))
+    .where(and(eq(schema.stories.authorId, targetId), sql`${schema.stories.expiresAt} > ${now}`))
+    .orderBy(desc(schema.stories.createdAt));
+
+  // Get view status for current user
+  const storyIds = stories.map((s) => s.id);
+  let viewedSet = new Set<string>();
+  if (storyIds.length > 0) {
+    const views = await db
+      .select({ storyId: schema.storyViews.storyId })
+      .from(schema.storyViews)
+      .where(and(eq(schema.storyViews.viewerId, user.id), inArray(schema.storyViews.storyId, storyIds)));
+    viewedSet = new Set(views.map((v) => v.storyId));
+  }
+
+  return c.json({
+    success: true,
+    data: {
+      stories: stories.map((s) => ({
+        id: s.id,
+        createdAt: s.createdAt,
+        expiresAt: s.expiresAt,
+        items: s.items || [],
+        viewed: viewedSet.has(s.id),
+      })),
+    },
+  });
+});
+
+// POST /v1/stories - Create story
+storyRouter.post("/", zValidator("json", createStorySchema), async (c) => {
+  const user = getCurrentUser(c);
+  const { mediaUrl, type, duration, stickerType, stickerData } = c.req.valid("json");
+
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+  const [story] = await db
+    .insert(schema.stories)
+    .values({
+      authorId: user.id,
+      expiresAt,
+    })
+    .returning();
+
+  await db.insert(schema.storyItems).values({
+    storyId: story.id,
+    mediaUrl,
+    type,
+    duration: duration.toString(),
+    sortOrder: 0,
+    stickerType,
+    stickerData,
+  });
+
+  const createdStory = await db.query.stories.findFirst({
+    where: eq(schema.stories.id, story.id),
+    with: { author: true, items: { orderBy: asc(schema.storyItems.sortOrder) } },
+  });
+
+  return c.json(
+    {
+      success: true,
+      data: { story: createdStory },
+    },
+    201
+  );
+});
+
+// POST /v1/stories/:storyId/view - Mark story as viewed
+storyRouter.post("/:storyId/view", async (c) => {
+  const user = getCurrentUser(c);
+  const storyId = c.req.param("storyId");
+
+  const story = await db.query.stories.findFirst({ where: eq(schema.stories.id, storyId) });
+  if (!story) {
+    throw new HTTPException(404, { message: "Story not found" });
+  }
+
+  if (story.expiresAt < new Date()) {
+    throw new HTTPException(410, { message: "Story has expired" });
+  }
+
+  await db.insert(schema.storyViews).values({ storyId, viewerId: user.id }).onConflictDoNothing();
+
+  return c.status(204);
+});
+
+// DELETE /v1/stories/:storyId - Delete story (author only)
+storyRouter.delete("/:storyId", async (c) => {
+  const user = getCurrentUser(c);
+  const storyId = c.req.param("storyId");
+
+  const story = await db.query.stories.findFirst({ where: eq(schema.stories.id, storyId) });
+  if (!story) {
+    throw new HTTPException(404, { message: "Story not found" });
+  }
+  if (story.authorId !== user.id) {
+    throw new HTTPException(403, { message: "Not authorized to delete this story" });
+  }
+
+  await db.delete(schema.stories).where(eq(schema.stories.id, storyId));
+
+  return c.status(204);
+});
+
+export { storyRouter };
