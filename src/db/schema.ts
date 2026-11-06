@@ -65,6 +65,10 @@ export const users = pgTable(
     postsCount: integer("posts_count").default(0).notNull(),
     followersCount: integer("followers_count").default(0).notNull(),
     followingCount: integer("following_count").default(0).notNull(),
+    // Better Auth required fields
+    name: varchar("name", { length: 100 }),
+    emailVerified: boolean("email_verified").default(false).notNull(),
+    image: varchar("image", { length: 500 }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },

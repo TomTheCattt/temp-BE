@@ -1,12 +1,12 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { db } from "../index";
+import { db } from "../db/client";
 import * as schema from "../db/schema";
+import { env } from "../config/env";
 
-// Use process.env directly since parseEnv types don't include function env vars
-const CORS_ORIGIN = process.env.CORS_ORIGIN!;
-const BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET!;
-const BETTER_AUTH_URL = process.env.BETTER_AUTH_URL!;
+const CORS_ORIGIN = env.CORS_ORIGIN;
+const BETTER_AUTH_SECRET = env.BETTER_AUTH_SECRET;
+const BETTER_AUTH_URL = env.BETTER_AUTH_URL;
 
 // Create Better Auth instance
 export const auth = betterAuth({
@@ -21,7 +21,7 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: true,
+    requireEmailVerification: false,
     autoSignIn: false,
   },
   emailVerification: {

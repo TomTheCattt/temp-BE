@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { authMiddleware, getCurrentUser } from "../middleware/auth";
-import { db } from "../index";
+import { db } from "../db/client";
 import * as schema from "../db/schema";
 import { eq, and, desc, count, sql, inArray } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";

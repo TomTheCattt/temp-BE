@@ -14,6 +14,8 @@ const envSchema = z.object({
   FIREBASE_WEB_API_KEY: z.string().optional(),
   CORS_ORIGIN: z.string().default('*'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  BETTER_AUTH_SECRET: z.string().min(1),
+  BETTER_AUTH_URL: z.string().min(1),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -148,6 +148,8 @@ authRouter.post(
         body: { email, password },
       });
 
+      console.log("[Auth] signInEmail result:", JSON.stringify(result, null, 2));
+
       if (!result?.user || !result?.token) {
         throw new HTTPException(401, {
           message: "Invalid credentials",

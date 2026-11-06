@@ -3,11 +3,13 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { prettyJSON } from "hono/pretty-json";
 import { HTTPException } from "hono/http-exception";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
-import { attachDatabasePool } from "@neon/functions";
-import * as schema from "./db/schema";
 import { rateLimiter } from "hono-rate-limiter";
+
+// Load environment variables FIRST (before any other config)
+import "./config/env";
+
+// Import database client
+import { db, pool } from "./db/client";
 
 // Import routes
 import { authRouter } from "./routes/auth.routes";
@@ -19,19 +21,9 @@ import { conversationRouter } from "./routes/conversation.routes";
 import { notificationRouter } from "./routes/notification.routes";
 import { uploadRouter } from "./routes/upload.routes";
 
-// Use process.env directly since parseEnv types don't include function env vars
-const DATABASE_URL = process.env.DATABASE_URL!;
-const CORS_ORIGIN = process.env.CORS_ORIGIN!;
-
-// Create PostgreSQL connection pool at module scope (reused across requests)
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  max: 5, // Small pool per isolate
-});
-attachDatabasePool(pool);
-
-// Create Drizzle instance with schema for type safety
-export const db = drizzle(pool, { schema });
+// Use validated env
+import { env } from "./config/env";
+const CORS_ORIGIN = env.CORS_ORIGIN;
 
 // Create Hono app
 const app = new Hono();
@@ -54,8 +46,8 @@ app.use(
 app.use(
   "/v1/auth/*",
   rateLimiter({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    limit: 10, // 10 requests per window
+    windowMs: 60 * 1000, // 1 minute
+    limit: 100, // 100 requests per minute (increased for development)
     standardHeaders: true,
     keyGenerator: (c) => c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "anonymous",
     handler: (c) =>
@@ -114,6 +106,13 @@ app.get("/health", (c) => {
       service: "instagram-clone-api",
     },
   });
+});
+
+// Mount Better Auth handler at root level for standard auth endpoints
+// This must be before the /v1/* rate limiter
+import { auth } from "./config/auth";
+app.on(["POST", "GET"], "/api/auth/*", async (c) => {
+  return auth.handler(c.req.raw);
 });
 
 // Mount API routes

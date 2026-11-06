@@ -9,7 +9,7 @@ datasource db {
 
 model User {
   id                  String               @id @default(uuid())
-  firebaseUid         String               @unique @map("firebase_uid")
+  firebaseUid         String?               @unique @map("firebase_uid")
   username            String               @unique
   fullName            String               @map("full_name")
   email               String               @unique
@@ -22,6 +22,10 @@ model User {
   postsCount          Int                  @default(0) @map("posts_count")
   followersCount      Int                  @default(0) @map("followers_count")
   followingCount      Int                  @default(0) @map("following_count")
+  // Better Auth required fields
+  name                String?              @map("name")
+  emailVerified       Boolean              @default(false) @map("email_verified")
+  image               String?              @map("image")
   createdAt           DateTime             @default(now()) @map("created_at")
   updatedAt           DateTime             @updatedAt @map("updated_at")
   blockedBy           Block[]              @relation("blocked")
@@ -43,6 +47,8 @@ model User {
   savedReels          SavedReel[]
   stories             Story[]
   settings            UserSettings?
+  accounts            Account[]
+  sessions            Session[]
 
   @@map("users")
 }
@@ -361,6 +367,53 @@ model PendingUpload {
 
   @@index([confirmed, createdAt])
   @@map("pending_uploads")
+}
+
+// Better Auth tables
+model Account {
+  id                    String  @id @default(uuid())
+  userId                String  @map("user_id")
+  accountId             String  @map("account_id")
+  providerId            String  @map("provider_id")
+  accessToken           String? @map("access_token")
+  refreshToken          String? @map("refresh_token")
+  idToken               String? @map("id_token")
+  accessTokenExpiresAt  DateTime? @map("access_token_expires_at")
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
+  scope                 String?
+  password              String?
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+  user                  User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  token        String   @unique
+  expiresAt    DateTime @map("expires_at")
+  ipAddress    String?  @map("ip_address")
+  userAgent    String?  @map("user_agent")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Verification {
+  id         String   @id @default(uuid())
+  identifier String
+  value      String
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("verifications")
 }
 
 enum DevicePlatform {

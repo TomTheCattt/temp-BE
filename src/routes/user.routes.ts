@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { authMiddleware, getCurrentUser } from "../middleware/auth";
-import { db } from "../index";
+import { db } from "../db/client";
 import * as schema from "../db/schema";
 import { eq, and, or, desc, asc, ilike, count, sql } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
