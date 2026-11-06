@@ -1,26 +1,8 @@
 import { createMiddleware } from "hono/factory";
 import { HTTPException } from "hono/http-exception";
-import { JWTPayload, jwtVerify, createRemoteJWKSet } from "jose";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
 import * as schema from "../db/schema";
-import { eq } from "drizzle-orm";
-
-// Use process.env directly since parseEnv types don't include function env vars
-const DATABASE_URL = process.env.DATABASE_URL!;
-const BETTER_AUTH_URL = process.env.BETTER_AUTH_URL!;
-
-// Create a separate pool for middleware (since it runs outside the main app pool)
-const middlewarePool = new Pool({
-  connectionString: DATABASE_URL,
-  max: 3,
-});
-const middlewareDb = drizzle(middlewarePool, { schema });
-
-// Create JWKS client for Better Auth
-// Better Auth exposes JWKS at {baseURL}/.well-known/jwks.json
-const jwksUrl = `${BETTER_AUTH_URL}/.well-known/jwks.json`;
-const jwks = createRemoteJWKSet(new URL(jwksUrl));
+import { eq, and, gt } from "drizzle-orm";
+import { db } from "../db/client";
 
 // Extend Hono's context with user
 declare module "hono" {
@@ -30,17 +12,9 @@ declare module "hono" {
   }
 }
 
-// Custom JWT payload type
-interface AuthJWTPayload extends JWTPayload {
-  sub: string;
-  sessionId: string;
-  email: string;
-  username?: string;
-}
-
 /**
  * Authentication middleware for Hono
- * Verifies JWT token using Better Auth's JWKS
+ * Verifies session token by querying the sessions table directly
  */
 export const authMiddleware = createMiddleware(async (c, next) => {
   const authHeader = c.req.header("Authorization");
@@ -55,16 +29,24 @@ export const authMiddleware = createMiddleware(async (c, next) => {
   const token = authHeader.slice(7); // Remove "Bearer "
 
   try {
-    // Verify JWT using Better Auth's JWKS
-    const { payload } = await jwtVerify<AuthJWTPayload>(token, jwks, {
-      issuer: BETTER_AUTH_URL,
-      audience: "instagram-clone", // Match your client ID
+    // Verify session by querying the sessions table directly
+    const sessionRecord = await db.query.sessions.findFirst({
+      where: and(
+        eq(schema.sessions.token, token),
+        gt(schema.sessions.expiresAt, new Date()) // Not expired
+      ),
     });
 
-    // Check if token is expired (jose does this automatically)
+    if (!sessionRecord) {
+      throw new HTTPException(401, {
+        message: "Invalid or expired session",
+        res: c.json({ success: false, error: "UNAUTHORIZED", message: "Invalid or expired session" }),
+      });
+    }
+
     // Fetch user from database
-    const user = await middlewareDb.query.users.findFirst({
-      where: eq(schema.users.id, payload.sub),
+    const user = await db.query.users.findFirst({
+      where: eq(schema.users.id, sessionRecord.userId),
       columns: {
         id: true,
         firebaseUid: true,
@@ -82,6 +64,10 @@ export const authMiddleware = createMiddleware(async (c, next) => {
         followingCount: true,
         createdAt: true,
         updatedAt: true,
+        // Better Auth required fields
+        name: true,
+        emailVerified: true,
+        image: true,
       },
     });
 
@@ -94,30 +80,13 @@ export const authMiddleware = createMiddleware(async (c, next) => {
 
     // Set user and session in context
     c.set("user", user);
-    c.set("session", { userId: user.id, sessionId: payload.sessionId });
+    c.set("session", { userId: user.id, sessionId: sessionRecord.id });
 
     await next();
   } catch (error) {
     if (error instanceof HTTPException) throw error;
 
-    console.error("[Auth] Token verification failed:", error);
-
-    // Check for specific JWT errors
-    if (error instanceof Error) {
-      if (error.message.includes("expired") || error.message.includes("exp")) {
-        throw new HTTPException(401, {
-          message: "Token expired",
-          res: c.json({ success: false, error: "TOKEN_EXPIRED", message: "Token expired, please login again" }),
-        });
-      }
-      if (error.message.includes("invalid") || error.message.includes("signature")) {
-        throw new HTTPException(401, {
-          message: "Invalid token",
-          res: c.json({ success: false, error: "INVALID_TOKEN", message: "Invalid token signature" }),
-        });
-      }
-    }
-
+    console.error("[Auth] Session verification failed:", error);
     throw new HTTPException(401, {
       message: "Invalid or expired token",
       res: c.json({ success: false, error: "UNAUTHORIZED", message: "Invalid or expired token" }),
@@ -140,36 +109,44 @@ export const optionalAuthMiddleware = createMiddleware(async (c, next) => {
   const token = authHeader.slice(7);
 
   try {
-    const { payload } = await jwtVerify<AuthJWTPayload>(token, jwks, {
-      issuer: BETTER_AUTH_URL,
-      audience: "instagram-clone",
+    const sessionRecord = await db.query.sessions.findFirst({
+      where: and(
+        eq(schema.sessions.token, token),
+        gt(schema.sessions.expiresAt, new Date())
+      ),
     });
 
-    const user = await middlewareDb.query.users.findFirst({
-      where: eq(schema.users.id, payload.sub),
-      columns: {
-        id: true,
-        firebaseUid: true,
-        username: true,
-        fullName: true,
-        email: true,
-        phone: true,
-        avatarUrl: true,
-        bio: true,
-        website: true,
-        isVerified: true,
-        isPrivate: true,
-        postsCount: true,
-        followersCount: true,
-        followingCount: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
+    if (sessionRecord) {
+      const user = await db.query.users.findFirst({
+        where: eq(schema.users.id, sessionRecord.userId),
+        columns: {
+          id: true,
+          firebaseUid: true,
+          username: true,
+          fullName: true,
+          email: true,
+          phone: true,
+          avatarUrl: true,
+          bio: true,
+          website: true,
+          isVerified: true,
+          isPrivate: true,
+          postsCount: true,
+          followersCount: true,
+          followingCount: true,
+          createdAt: true,
+          updatedAt: true,
+          // Better Auth required fields
+          name: true,
+          emailVerified: true,
+          image: true,
+        },
+      });
 
-    if (user) {
-      c.set("user", user);
-      c.set("session", { userId: user.id, sessionId: payload.sessionId });
+      if (user) {
+        c.set("user", user);
+        c.set("session", { userId: user.id, sessionId: sessionRecord.id });
+      }
     }
   } catch {
     // Silently ignore invalid tokens for optional auth

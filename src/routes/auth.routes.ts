@@ -5,7 +5,7 @@ import { auth } from "../config/auth";
 import { authMiddleware, getCurrentUser } from "../middleware/auth";
 import { db } from "../db/client";
 import * as schema from "../db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and, gt } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 
 // Validation schemas
