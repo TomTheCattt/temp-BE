@@ -36,6 +36,40 @@ Standard Better Auth endpoints are also available at `/api/auth/*` (see below).
 | GET | `/api/auth/verify-email` | Verify email (token in query) |
 | POST | `/api/auth/send-verification-email` | Resend verification |
 
+### Test Accounts (Seeded)
+
+All 20 seeded users use password: `password123`
+
+| Email | Username | Full Name |
+|-------|----------|-----------|
+| `lanle1@example.com` | `lanle1` | Lan Le |
+| `thaotruong2@example.com` | `thaotruong2` | Thao Truong |
+| `hado3@example.com` | `hado3` | Ha Do |
+| `hahua4@example.com` | `hahua4` | Ha Hua |
+| `taiho5@example.com` | `taiho5` | Tai Ho |
+| `phonglam6@example.com` | `phonglam6` | Phong Lam |
+| `vyho7@example.com` | `vyho7` | Vy Ho |
+| `anduong8@example.com` | `anduong8` | An Duong |
+| `nhihuynh9@example.com` | `nhihuynh9` | Nhi Huynh |
+| `baovu10@example.com` | `baovu10` | Bao Vu |
+| `quynhtran11@example.com` | `quynhtran11` | Quynh Tran |
+| `ngoclam12@example.com` | `ngoclam12` | Ngoc Lam |
+| `datly13@example.com` | `datly13` | Dat Ly |
+| `vybui14@example.com` | `vybui14` | Vy Bui |
+| `namphan15@example.com` | `namphan15` | Nam Phan |
+| `vyle16@example.com` | `vyle16` | Vy Le |
+| `phongbui17@example.com` | `phongbui17` | Phong Bui |
+| `vinhvo18@example.com` | `vinhvo18` | Vinh Vo |
+| `nhido19@example.com` | `nhido19` | Nhi Do |
+| `datdo20@example.com` | `datdo20` | Dat Do |
+
+**Example Login:**
+```bash
+curl -X POST http://localhost:3000/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "lanle1@example.com", "password": "password123"}'
+```
+
 ---
 
 ## User Profile & Settings (`/v1/user` & `/v1/users`)

@@ -1,6 +1,6 @@
 # Implementation Progress — Instagram Clone Backend
 
-> **Updated:** 2026-11-05  
+> **Updated:** 2026-11-06  
 > **Architecture:** Hono + Drizzle ORM + Better Auth + Neon Functions (Primary)  
 > **Legacy:** Express + Prisma + Firebase Auth (Kept in sync)
 
@@ -36,6 +36,10 @@ This document tracks the actual implementation status against the [BACKEND_SYSTE
 - [x] Environment validation via `neon.ts` config
 - [x] Drizzle Kit configuration for migrations
 - [x] TypeScript strict mode with path aliases
+- [x] Shared database client (`src/db/client.ts`) to break circular dependencies
+- [x] Local dev server entry point (`src/server.ts`) with @hono/node-server
+- [x] Comprehensive seed script with 20 users, 50 posts, 30 reels, 25 stories, social graph, interactions, conversations, messages, notifications, pending uploads (all logically connected)
+- [x] scrypt password hashing (N=16384, r=16, p=1, dkLen=64) matching Better Auth defaults
 
 ### Authentication (Better Auth via Neon Auth)
 - [x] Native Better Auth endpoints at `/api/auth/*` (sign-up, sign-in, sign-out, password reset, email verification)
@@ -44,6 +48,10 @@ This document tracks the actual implementation status against the [BACKEND_SYSTE
 - [x] `revokeOtherSessions` on password change
 - [x] JWKS token verification with issuer/audience validation
 - [x] User lookup from database on each request
+- [x] Session-based auth middleware (Bearer token validates against sessions table)
+- [x] Email verification disabled for development (`requireEmailVerification: false`)
+- [x] Rate limiting increased to 100 req/min for auth endpoints
+- [x] Seeded 20 test users with password "password123" (scrypt hashes)
 
 ### User Profile & Settings
 - [x] `GET /v1/user/profile` (iOS alias)
@@ -224,7 +232,51 @@ npm run drizzle:generate
 
 # Prisma validation (legacy)
 npx prisma validate
+
+# Run database seed
+npx prisma db seed
+# or directly:
+npx tsx prisma/seed.ts
+
+# Start local dev server
+npm run dev
+# or:
+npx tsx src/server.ts
 ```
+
+### Login Test (2026-11-06)
+```bash
+# Test login with seeded user
+curl -X POST http://localhost:3000/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "lanle1@example.com", "password": "password123"}'
+# Returns: 200 OK with user data, accessToken, refreshToken, expiresAt
+```
+
+### Seeded Test Accounts
+All 20 users use password: `password123`
+| Email | Username | Full Name |
+|-------|----------|-----------|
+| lanle1@example.com | lanle1 | Lan Le |
+| thaotruong2@example.com | thaotruong2 | Thao Truong |
+| hado3@example.com | hado3 | Ha Do |
+| hahua4@example.com | hahua4 | Ha Hua |
+| taiho5@example.com | taiho5 | Tai Ho |
+| phonglam6@example.com | phonglam6 | Phong Lam |
+| vyho7@example.com | vyho7 | Vy Ho |
+| anduong8@example.com | anduong8 | An Duong |
+| nhihuynh9@example.com | nhihuynh9 | Nhi Huynh |
+| baovu10@example.com | baovu10 | Bao Vu |
+| quynhtran11@example.com | quynhtran11 | Quynh Tran |
+| ngoclam12@example.com | ngoclam12 | Ngoc Lam |
+| datly13@example.com | datly13 | Dat Ly |
+| vybui14@example.com | vybui14 | Vy Bui |
+| namphan15@example.com | namphan15 | Nam Phan |
+| vyle16@example.com | vyle16 | Vy Le |
+| phongbui17@example.com | phongbui17 | Phong Bui |
+| vinhvo18@example.com | vinhvo18 | Vinh Vo |
+| nhido19@example.com | nhido19 | Nhi Do |
+| datdo20@example.com | datdo20 | Dat Do |
 
 ---
 
