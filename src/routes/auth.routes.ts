@@ -3,7 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { auth } from "../config/auth";
 import { authMiddleware, getCurrentUser } from "../middleware/auth";
-import { db } from "../index";
+import { db } from "../db/client";
 import * as schema from "../db/schema";
 import { eq } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
@@ -30,13 +30,6 @@ const changePasswordSchema = z.object({
 // Create auth router
 const authRouter = new Hono();
 
-// Mount Better Auth handler for all standard auth endpoints
-// This handles: signUp, signIn, signOut, password reset, email verification, etc.
-// The handler is available at auth.handler
-authRouter.on(["POST", "GET"], "/api/auth/*", async (c) => {
-  return auth.handler(c.req.raw);
-});
-
 // Custom register endpoint that adds username
 authRouter.post(
   "/register",
@@ -59,18 +52,28 @@ authRouter.post(
       // Use Better Auth to sign up
       // Additional fields (username, fullName, phone) are passed in the body
       // They are stored in the user's data field in Better Auth
-      const result = await auth.api.signUpEmail({
-        body: {
-          email,
-          password,
-          name: fullName,
-          fullName,
-          username,
-          phone,
-        },
-      });
+      let result;
+      try {
+        result = await auth.api.signUpEmail({
+          body: {
+            email,
+            password,
+            name: fullName,
+            fullName,
+            username,
+            phone,
+          },
+        });
+      } catch (e) {
+        console.error("[Better Auth] signUpEmail error:", e);
+        throw new HTTPException(500, {
+          message: "Registration failed",
+          res: c.json({ success: false, error: "REGISTRATION_FAILED", message: e instanceof Error ? e.message : "Failed to create account" }),
+        });
+      }
 
       if (!result?.user) {
+        console.error("[Auth] No user returned from Better Auth:", result);
         throw new HTTPException(500, {
           message: "Registration failed",
           res: c.json({ success: false, error: "REGISTRATION_FAILED", message: "Failed to create account" }),
@@ -116,6 +119,9 @@ authRouter.post(
             followingCount: 0,
             createdAt: result.user.createdAt,
           },
+          accessToken: result.token,
+          refreshToken: result.token,
+          expiresAt: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7, // 7 days
         },
       }, 201);
     } catch (error) {
@@ -142,7 +148,7 @@ authRouter.post(
         body: { email, password },
       });
 
-      if (!result?.user) {
+      if (!result?.user || !result?.token) {
         throw new HTTPException(401, {
           message: "Invalid credentials",
           res: c.json({ success: false, error: "INVALID_CREDENTIALS", message: "Invalid email or password" }),
@@ -153,6 +159,11 @@ authRouter.post(
       const user = await db.query.users.findFirst({
         where: eq(schema.users.id, result.user.id),
       });
+
+      // Return session token for Bearer token authentication
+      // For mobile: return accessToken (sessionToken), refreshToken (same), expiresAt
+      const sessionToken = result.token;
+      const expiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7; // 7 days from now
 
       return c.json({
         success: true,
@@ -188,6 +199,9 @@ authRouter.post(
             followingCount: 0,
             createdAt: result.user.createdAt,
           },
+          accessToken: sessionToken,
+          refreshToken: sessionToken,
+          expiresAt,
         },
       });
     } catch (error) {
@@ -352,23 +366,88 @@ authRouter.get(
   }
 );
 
-// Refresh session
+// Refresh session - accepts Bearer token (refreshToken) for mobile apps
 authRouter.post(
   "/refresh",
   async (c) => {
     try {
-      const session = await auth.api.getSession({
-        headers: c.req.raw.headers,
-      });
-      if (!session) {
+      // Try to get refresh token from Authorization header (Bearer token)
+      const authHeader = c.req.header("Authorization");
+      let refreshToken = "";
+
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        refreshToken = authHeader.slice(7);
+      }
+
+      // If no Bearer token, try to get from cookies (for web)
+      if (!refreshToken) {
+        const session = await auth.api.getSession({
+          headers: c.req.raw.headers,
+        });
+        if (session) {
+          // Extend session expiry in database
+          await db
+            .update(schema.sessions)
+            .set({
+              expiresAt: new Date(Date.now() + 60 * 60 * 24 * 7 * 1000), // Extend 7 days
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.sessions.token, session.session.id));
+
+          const newExpiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7;
+          return c.json({
+            success: true,
+            data: {
+              accessToken: session.session.token,
+              refreshToken: session.session.token,
+              expiresAt: newExpiresAt,
+            },
+          });
+        }
         throw new HTTPException(401, {
           message: "No valid session",
           res: c.json({ success: false, error: "NO_SESSION", message: "No valid session" }),
         });
       }
-      return c.json({ success: true, data: { session } });
+
+      // Validate refresh token (Bearer token) against sessions table
+      const sessionRecord = await db.query.sessions.findFirst({
+        where: and(
+          eq(schema.sessions.token, refreshToken),
+          gt(schema.sessions.expiresAt, new Date()) // Not expired
+        ),
+      });
+
+      if (!sessionRecord) {
+        throw new HTTPException(401, {
+          message: "Invalid or expired refresh token",
+          res: c.json({ success: false, error: "INVALID_REFRESH_TOKEN", message: "Invalid or expired refresh token" }),
+        });
+      }
+
+      // Extend session expiry in database (sliding window)
+      const newExpiresAt = new Date(Date.now() + 60 * 60 * 24 * 7 * 1000); // 7 days from now
+      await db
+        .update(schema.sessions)
+        .set({
+          expiresAt: newExpiresAt,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.sessions.id, sessionRecord.id));
+
+      const expiresAtUnix = Math.floor(newExpiresAt.getTime() / 1000);
+
+      return c.json({
+        success: true,
+        data: {
+          accessToken: sessionRecord.token,
+          refreshToken: sessionRecord.token,
+          expiresAt: expiresAtUnix,
+        },
+      });
     } catch (error) {
       if (error instanceof HTTPException) throw error;
+      console.error("[Auth] Refresh error:", error);
       throw new HTTPException(401, {
         message: "Session expired",
         res: c.json({ success: false, error: "SESSION_EXPIRED", message: "Session expired, please login again" }),
