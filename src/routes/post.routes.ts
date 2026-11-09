@@ -4,7 +4,7 @@ import { z } from "zod";
 import { authMiddleware, getCurrentUser } from "../middleware/auth";
 import { db } from "../db/client";
 import * as schema from "../db/schema";
-import { eq, and, desc, asc, count, sql, inArray, lt, gt } from "drizzle-orm";
+import { eq, and, desc, asc, count, sql, inArray, lt, gt, not } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 
 const createPostSchema = z.object({
@@ -64,8 +64,12 @@ postRouter.get("/feed", async (c) => {
   // Build where conditions
   const whereConditions = [
     inArray(schema.posts.authorId, followingIds),
-    sql`${schema.posts.authorId} NOT IN (${blockedIds.length > 0 ? blockedIds : sql`SELECT 1 WHERE FALSE`})`,
   ];
+
+  // Exclude blocked users
+  if (blockedIds.length > 0) {
+    whereConditions.push(not(inArray(schema.posts.authorId, blockedIds)));
+  }
 
   // Add cursor condition if provided
   if (cursor) {
@@ -137,10 +141,17 @@ postRouter.get("/explore", async (c) => {
   const followingIds = following.map((f) => f.followingId);
   followingIds.push(user.id);
 
-  const whereConditions = [
-    sql`${schema.posts.authorId} NOT IN (${followingIds.length > 0 ? followingIds : sql`SELECT 1 WHERE FALSE`})`,
-    sql`${schema.posts.authorId} NOT IN (${blockedIds.length > 0 ? blockedIds : sql`SELECT 1 WHERE FALSE`})`,
-  ];
+  const whereConditions = [];
+
+  // Exclude following users (explore shows non-following content)
+  if (followingIds.length > 0) {
+    whereConditions.push(not(inArray(schema.posts.authorId, followingIds)));
+  }
+
+  // Exclude blocked users
+  if (blockedIds.length > 0) {
+    whereConditions.push(not(inArray(schema.posts.authorId, blockedIds)));
+  }
 
   if (cursor) {
     whereConditions.push(lt(schema.posts.createdAt, new Date(cursor)));

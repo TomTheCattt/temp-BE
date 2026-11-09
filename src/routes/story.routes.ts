@@ -4,7 +4,7 @@ import { z } from "zod";
 import { authMiddleware, getCurrentUser } from "../middleware/auth";
 import { db } from "../db/client";
 import * as schema from "../db/schema";
-import { eq, and, desc, asc, count, sql, inArray, lt } from "drizzle-orm";
+import { eq, and, desc, asc, count, sql, inArray, lt, not } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 
 const createStorySchema = z.object({
@@ -37,6 +37,16 @@ storyRouter.get("/feed", async (c) => {
 
   const now = new Date();
 
+  const whereConditions = [
+    inArray(schema.stories.authorId, followingIds),
+    sql`${schema.stories.expiresAt} > ${now}`,
+  ];
+
+  // Exclude blocked users
+  if (blockedIds.length > 0) {
+    whereConditions.push(not(inArray(schema.stories.authorId, blockedIds)));
+  }
+
   // Get active stories from following
   const activeStories = await db
     .select({
@@ -55,13 +65,7 @@ storyRouter.get("/feed", async (c) => {
     })
     .from(schema.stories)
     .innerJoin(schema.users, eq(schema.users.id, schema.stories.authorId))
-    .where(
-      and(
-        inArray(schema.stories.authorId, followingIds),
-        sql`${schema.stories.expiresAt} > ${now}`,
-        sql`${schema.stories.authorId} NOT IN (${blockedIds.length > 0 ? blockedIds : sql`SELECT 1 WHERE FALSE`})`
-      )
-    )
+    .where(and(...whereConditions))
     .orderBy(desc(schema.stories.createdAt));
 
   // Group by author

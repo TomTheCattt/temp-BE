@@ -4,7 +4,7 @@ import { z } from "zod";
 import { authMiddleware, getCurrentUser } from "../middleware/auth";
 import { db } from "../db/client";
 import * as schema from "../db/schema";
-import { eq, and, desc, asc, count, sql, inArray, isNull, lt } from "drizzle-orm";
+import { eq, and, desc, asc, count, sql, inArray, isNull, lt, not } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 
 const createReelSchema = z.object({
@@ -48,9 +48,12 @@ reelRouter.get("/feed", async (c) => {
   const blocked = await db.select({ blockedId: schema.blocks.blockedId }).from(schema.blocks).where(eq(schema.blocks.blockerId, user.id));
   const blockedIds = blocked.map((b) => b.blockedId);
 
-  const whereConditions = [
-    sql`${schema.reels.authorId} NOT IN (${blockedIds.length > 0 ? blockedIds : sql`SELECT 1 WHERE FALSE`})`,
-  ];
+  const whereConditions = [];
+
+  // Exclude blocked users
+  if (blockedIds.length > 0) {
+    whereConditions.push(not(inArray(schema.reels.authorId, blockedIds)));
+  }
 
   if (cursor) {
     whereConditions.push(lt(schema.reels.createdAt, new Date(cursor)));

@@ -4,6 +4,8 @@
 > **Auth:** `Authorization: Bearer <better_auth_session_token>` on all endpoints except `/v1/auth/*` public ones
 > **Content-Type:** `application/json` (except multipart uploads)
 > **Response Format:** `{ success: true, data: {...} }` or `{ success: false, error: "CODE", message: "..." }`
+>
+> **Auth Model:** Better Auth (via Neon Auth) with scrypt password hashing (N=16384, r=16, p=1, dkLen=64). Sessions stored in database with 7-day JWT expiry. Token verification via JWKS at `{BETTER_AUTH_URL}/.well-known/jwks.json`. Email verification disabled for dev.
 
 ---
 
@@ -220,6 +222,19 @@ Uses Neon Object Storage (S3-compatible).
 
 ---
 
+## Internal Cleanup Endpoints (`/internal`)
+
+Protected by `INTERNAL_CRON_SECRET` (Bearer token). Called by Neon Functions cron triggers.
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/internal/cleanup/pending-uploads` | 🔑 Internal | Delete unconfirmed uploads > 24h from storage & DB |
+| POST | `/internal/cleanup/device-tokens` | 🔑 Internal | Delete expired device tokens (expiresAt < now) |
+
+> **Headers:** `Authorization: Bearer <INTERNAL_CRON_SECRET>`
+
+---
+
 ## WebSocket
 
 **Connection:** `wss://<branch>-<project>.neonfunctions.app/ws?token=<session_token>`  
@@ -410,7 +425,7 @@ interface Notification {
 
 1. **Use `/v1/user/profile`** for GET/PUT profile (not `/v1/users/me`)
 2. **Send `name`** not `fullName` in PUT `/v1/user/profile`
-3. **Decode snake_case:** `decoder.keyDecodingStrategy = .convertFromSnakeCase`
+3. **Backend returns camelCase** — no snake_case decoding needed (remove `.convertFromSnakeCase`)
 4. **Attach Better Auth session token** to every request: `Authorization: Bearer <token>`
 5. **WebSocket:** Connect with `wss://host/ws?token=<session_token>`
 6. **Uploads:** Use returned `pendingUploadId` in Post/Story/Reel creation

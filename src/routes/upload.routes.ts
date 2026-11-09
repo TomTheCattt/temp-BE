@@ -10,6 +10,40 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "crypto";
 
+// Magic bytes for file type validation
+const MAGIC_BYTES: Record<string, number[][]> = {
+  "image/jpeg": [[0xFF, 0xD8, 0xFF]],
+  "image/png": [[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]],
+  "image/webp": [[0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]],
+  "image/heic": [
+    [0x00, 0x00, 0x00, 0x1C, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63],
+    [0x00, 0x00, 0x00, 0x1C, 0x66, 0x74, 0x79, 0x70, 0x6D, 0x69, 0x66, 0x31],
+  ],
+  "image/heif": [
+    [0x00, 0x00, 0x00, 0x1C, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63],
+    [0x00, 0x00, 0x00, 0x1C, 0x66, 0x74, 0x79, 0x70, 0x6D, 0x69, 0x66, 0x31],
+  ],
+  "video/mp4": [
+    [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6F, 0x6D],
+    [0x00, 0x00, 0x00, 0x1C, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6F, 0x6D],
+    [0x00, 0x00, 0x00, 0x00, 0x66, 0x74, 0x79, 0x70, 0x6D, 0x70, 0x34, 0x32],
+  ],
+  "video/quicktime": [
+    [0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x71, 0x74, 0x20, 0x20],
+    [0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70, 0x71, 0x74, 0x20, 0x20],
+  ],
+  "video/webm": [[0x1A, 0x45, 0xDF, 0xA3]],
+};
+
+function validateMagicBytes(buffer: Uint8Array, contentType: string): boolean {
+  const signatures = MAGIC_BYTES[contentType];
+  if (!signatures) return false;
+
+  return signatures.some((sig) =>
+    sig.every((byte, index) => buffer[index] === byte)
+  );
+}
+
 // Neon Object Storage configuration
 const s3Client = new S3Client({
   region: "auto",
@@ -174,12 +208,18 @@ uploadRouter.post("/image", async (c) => {
 
   const storagePath = generateStoragePath(user.id, "images", file.type);
   const arrayBuffer = await file.arrayBuffer();
+  const buffer = new Uint8Array(arrayBuffer);
+
+  // Validate magic bytes
+  if (!validateMagicBytes(buffer, file.type)) {
+    throw new HTTPException(400, { message: "Invalid file format: content does not match declared type" });
+  }
 
   await s3Client.send(
     new PutObjectCommand({
       Bucket: UPLOAD_BUCKET,
       Key: storagePath,
-      Body: new Uint8Array(arrayBuffer),
+      Body: buffer,
       ContentType: file.type,
     })
   );
@@ -226,12 +266,18 @@ uploadRouter.post("/video", async (c) => {
 
   const storagePath = generateStoragePath(user.id, "videos", file.type);
   const arrayBuffer = await file.arrayBuffer();
+  const buffer = new Uint8Array(arrayBuffer);
+
+  // Validate magic bytes
+  if (!validateMagicBytes(buffer, file.type)) {
+    throw new HTTPException(400, { message: "Invalid file format: content does not match declared type" });
+  }
 
   await s3Client.send(
     new PutObjectCommand({
       Bucket: UPLOAD_BUCKET,
       Key: storagePath,
-      Body: new Uint8Array(arrayBuffer),
+      Body: buffer,
       ContentType: file.type,
     })
   );
@@ -282,13 +328,19 @@ uploadRouter.post("/avatar", async (c) => {
 
   const storagePath = generateStoragePath(user.id, "avatars", file.type);
   const arrayBuffer = await file.arrayBuffer();
+  const buffer = new Uint8Array(arrayBuffer);
+
+  // Validate magic bytes
+  if (!validateMagicBytes(buffer, file.type)) {
+    throw new HTTPException(400, { message: "Invalid file format: content does not match declared type" });
+  }
 
   // In production, use Sharp to resize to 400x400
   await s3Client.send(
     new PutObjectCommand({
       Bucket: UPLOAD_BUCKET,
       Key: storagePath,
-      Body: new Uint8Array(arrayBuffer),
+      Body: buffer,
       ContentType: file.type,
     })
   );

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { authMiddleware, getCurrentUser } from "../middleware/auth";
 import { db } from "../db/client";
 import * as schema from "../db/schema";
-import { eq, and, or, desc, asc, ilike, count, sql } from "drizzle-orm";
+import { eq, and, or, desc, asc, ilike, count, notExists, inArray, not, sql } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 
 // Validation schemas
@@ -133,16 +133,20 @@ userRouter.post("/me/device-token", zValidator("json", deviceSchema), async (c) 
   const user = getCurrentUser(c);
   const { token, platform } = c.req.valid("json");
 
+  // Set expiry to 90 days from now
+  const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+
   await db
     .insert(schema.deviceTokens)
     .values({
       userId: user.id,
       token,
       platform,
+      expiresAt,
     })
     .onConflictDoUpdate({
       target: schema.deviceTokens.token,
-      set: { platform, updatedAt: new Date() },
+      set: { platform, updatedAt: new Date(), expiresAt },
     });
 
   return c.status(204);
@@ -166,6 +170,17 @@ userRouter.get("/search", zValidator("query", searchSchema), async (c) => {
   const { q } = c.req.valid("query");
   const { page, perPage, offset } = getPagination(c);
 
+  // Subquery for blocked users
+  const blockedByUser = db
+    .select({ blockedId: schema.blocks.blockedId })
+    .from(schema.blocks)
+    .where(eq(schema.blocks.blockerId, user.id));
+
+  const blockedUser = db
+    .select({ blockerId: schema.blocks.blockerId })
+    .from(schema.blocks)
+    .where(eq(schema.blocks.blockedId, user.id));
+
   const [usersList, total] = await Promise.all([
     db
       .select()
@@ -176,9 +191,11 @@ userRouter.get("/search", zValidator("query", searchSchema), async (c) => {
             ilike(schema.users.username, `%${q}%`),
             ilike(schema.users.fullName, `%${q}%`)
           ),
-          // Exclude current user and blocked users
-          sql`${schema.users.id} != ${user.id}`,
-          sql`NOT EXISTS (SELECT 1 FROM ${schema.blocks} WHERE (${schema.blocks.blockerId} = ${user.id} AND ${schema.blocks.blockedId} = ${schema.users.id}) OR (${schema.blocks.blockerId} = ${schema.users.id} AND ${schema.blocks.blockedId} = ${user.id}))`
+          // Exclude current user
+          not(eq(schema.users.id, user.id)),
+          // Exclude blocked users (both directions)
+          not(inArray(schema.users.id, blockedByUser)),
+          not(inArray(schema.users.id, blockedUser))
         )
       )
       .limit(perPage)
@@ -193,7 +210,7 @@ userRouter.get("/search", zValidator("query", searchSchema), async (c) => {
             ilike(schema.users.username, `%${q}%`),
             ilike(schema.users.fullName, `%${q}%`)
           ),
-          sql`${schema.users.id} != ${user.id}`
+          not(eq(schema.users.id, user.id))
         )
       ),
   ]);
@@ -228,14 +245,26 @@ userRouter.get("/suggested", async (c) => {
     .from(schema.follows)
     .where(eq(schema.follows.followerId, user.id));
 
+  // Subquery for blocked users
+  const blockedByUser = db
+    .select({ blockedId: schema.blocks.blockedId })
+    .from(schema.blocks)
+    .where(eq(schema.blocks.blockerId, user.id));
+
+  const blockedUser = db
+    .select({ blockerId: schema.blocks.blockerId })
+    .from(schema.blocks)
+    .where(eq(schema.blocks.blockedId, user.id));
+
   const usersList = await db
     .select()
     .from(schema.users)
     .where(
       and(
-        sql`${schema.users.id} != ${user.id}`,
-        sql`${schema.users.id} NOT IN (${followingSubquery})`,
-        sql`NOT EXISTS (SELECT 1 FROM ${schema.blocks} WHERE (${schema.blocks.blockerId} = ${user.id} AND ${schema.blocks.blockedId} = ${schema.users.id}) OR (${schema.blocks.blockerId} = ${schema.users.id} AND ${schema.blocks.blockedId} = ${user.id}))`
+        not(eq(schema.users.id, user.id)),
+        not(inArray(schema.users.id, followingSubquery)),
+        not(inArray(schema.users.id, blockedByUser)),
+        not(inArray(schema.users.id, blockedUser))
       )
     )
     .limit(perPage)
@@ -260,6 +289,199 @@ userRouter.get("/suggested", async (c) => {
     },
   });
 });
+
+// iOS aliases
+// GET /v1/user/profile
+userRouter.get("/profile", async (c) => {
+  const user = getCurrentUser(c);
+  return c.json({
+    success: true,
+    data: {
+      user: {
+        id: user.id,
+        username: user.username,
+        fullName: user.fullName,
+        email: user.email,
+        phone: user.phone,
+        avatarUrl: user.avatarUrl,
+        bio: user.bio,
+        website: user.website,
+        isVerified: user.isVerified,
+        isPrivate: user.isPrivate,
+        postsCount: user.postsCount,
+        followersCount: user.followersCount,
+        followingCount: user.followingCount,
+        createdAt: user.createdAt,
+      },
+    },
+  });
+});
+
+// PUT /v1/user/profile (iOS sends name instead of fullName)
+userRouter.put("/profile", zValidator("json", profileAliasSchema), async (c) => {
+  const user = getCurrentUser(c);
+  const { name } = c.req.valid("json");
+
+  if (!name) {
+    throw new HTTPException(400, {
+      message: "Name is required",
+      res: c.json({ success: false, error: "VALIDATION_ERROR", message: "Name is required" }),
+    });
+  }
+
+  const [updated] = await db
+    .update(schema.users)
+    .set({ fullName: name, updatedAt: new Date() })
+    .where(eq(schema.users.id, user.id))
+    .returning();
+
+  return c.json({
+    success: true,
+    data: {
+      user: {
+        id: updated.id,
+        username: updated.username,
+        fullName: updated.fullName,
+        email: updated.email,
+        phone: updated.phone,
+        avatarUrl: updated.avatarUrl,
+        bio: updated.bio,
+        website: updated.website,
+        isVerified: updated.isVerified,
+        isPrivate: updated.isPrivate,
+        postsCount: updated.postsCount,
+        followersCount: updated.followersCount,
+        followingCount: updated.followingCount,
+        createdAt: updated.createdAt,
+      },
+    },
+  });
+});
+
+// User Settings
+// GET /v1/user/settings
+userRouter.get("/settings", async (c) => {
+  const user = getCurrentUser(c);
+
+  const settings = await db.query.userSettings.findFirst({
+    where: eq(schema.userSettings.userId, user.id),
+  });
+
+  if (!settings) {
+    // Create default settings
+    const [newSettings] = await db
+      .insert(schema.userSettings)
+      .values({ userId: user.id })
+      .returning();
+    return c.json({ success: true, data: { settings: newSettings } });
+  }
+
+  return c.json({ success: true, data: { settings } });
+});
+
+// PUT /v1/user/settings
+userRouter.put("/settings", zValidator("json", userSettingsSchema), async (c) => {
+  const user = getCurrentUser(c);
+  const data = c.req.valid("json");
+
+  const [updated] = await db
+    .insert(schema.userSettings)
+    .values({ userId: user.id, ...data, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: schema.userSettings.userId,
+      set: { ...data, updatedAt: new Date() },
+    })
+    .returning();
+
+  return c.json({ success: true, data: { settings: updated } });
+});
+
+// Blocked users
+// GET /v1/users/me/blocked
+userRouter.get("/me/blocked", async (c) => {
+  const user = getCurrentUser(c);
+  const { page, perPage, offset } = getPagination(c);
+
+  const [blockedUsers, total] = await Promise.all([
+    db
+      .select({
+        id: schema.users.id,
+        username: schema.users.username,
+        fullName: schema.users.fullName,
+        avatarUrl: schema.users.avatarUrl,
+        isVerified: schema.users.isVerified,
+        isPrivate: schema.users.isPrivate,
+        blockedAt: schema.blocks.createdAt,
+      })
+      .from(schema.blocks)
+      .innerJoin(schema.users, eq(schema.users.id, schema.blocks.blockedId))
+      .where(eq(schema.blocks.blockerId, user.id))
+      .limit(perPage)
+      .offset(offset)
+      .orderBy(desc(schema.blocks.createdAt)),
+    db
+      .select({ count: count() })
+      .from(schema.blocks)
+      .where(eq(schema.blocks.blockerId, user.id)),
+  ]);
+
+  return c.json({
+    success: true,
+    data: {
+      items: blockedUsers,
+      page,
+      perPage,
+      total: total[0]?.count || 0,
+      hasMore: page * perPage < (total[0]?.count || 0),
+    },
+  });
+});
+
+// Close Friends
+// GET /v1/users/me/close-friends
+userRouter.get("/me/close-friends", async (c) => {
+  const user = getCurrentUser(c);
+
+  const closeFriends = await db
+    .select({
+      id: schema.users.id,
+      username: schema.users.username,
+      fullName: schema.users.fullName,
+      avatarUrl: schema.users.avatarUrl,
+      isVerified: schema.users.isVerified,
+    })
+    .from(schema.closeFriends)
+    .innerJoin(schema.users, eq(schema.users.id, schema.closeFriends.friendId))
+    .where(eq(schema.closeFriends.userId, user.id))
+    .orderBy(asc(schema.closeFriends.createdAt));
+
+  return c.json({ success: true, data: { items: closeFriends } });
+});
+
+// PUT /v1/users/me/close-friends (full-set replace)
+userRouter.put("/me/close-friends", zValidator("json", closeFriendsSchema), async (c) => {
+  const user = getCurrentUser(c);
+  const { friendIds } = c.req.valid("json");
+
+  // Delete all existing close friends
+  await db.delete(schema.closeFriends).where(eq(schema.closeFriends.userId, user.id));
+
+  // Insert new close friends
+  if (friendIds.length > 0) {
+    await db.insert(schema.closeFriends).values(
+      friendIds.map((friendId) => ({
+        userId: user.id,
+        friendId,
+      }))
+    );
+  }
+
+  return c.status(204);
+});
+
+// ============================================
+// PARAMETERIZED ROUTES (/id/*) - MUST BE LAST
+// ============================================
 
 // GET /v1/users/:id/followers - List followers
 userRouter.get("/:id/followers", async (c) => {
@@ -529,7 +751,7 @@ userRouter.delete("/:id/block", async (c) => {
   return c.status(204);
 });
 
-// GET /v1/users/:id - Public profile
+// GET /v1/users/:id - Public profile (catch-all, must be last)
 userRouter.get("/:id", async (c) => {
   const user = getCurrentUser(c);
   const targetId = c.req.param("id");
@@ -615,195 +837,6 @@ userRouter.get("/:id", async (c) => {
       },
     },
   });
-});
-
-// iOS aliases
-// GET /v1/user/profile
-userRouter.get("/profile", async (c) => {
-  const user = getCurrentUser(c);
-  return c.json({
-    success: true,
-    data: {
-      user: {
-        id: user.id,
-        username: user.username,
-        fullName: user.fullName,
-        email: user.email,
-        phone: user.phone,
-        avatarUrl: user.avatarUrl,
-        bio: user.bio,
-        website: user.website,
-        isVerified: user.isVerified,
-        isPrivate: user.isPrivate,
-        postsCount: user.postsCount,
-        followersCount: user.followersCount,
-        followingCount: user.followingCount,
-        createdAt: user.createdAt,
-      },
-    },
-  });
-});
-
-// PUT /v1/user/profile (iOS sends name instead of fullName)
-userRouter.put("/profile", zValidator("json", profileAliasSchema), async (c) => {
-  const user = getCurrentUser(c);
-  const { name } = c.req.valid("json");
-
-  if (!name) {
-    throw new HTTPException(400, {
-      message: "Name is required",
-      res: c.json({ success: false, error: "VALIDATION_ERROR", message: "Name is required" }),
-    });
-  }
-
-  const [updated] = await db
-    .update(schema.users)
-    .set({ fullName: name, updatedAt: new Date() })
-    .where(eq(schema.users.id, user.id))
-    .returning();
-
-  return c.json({
-    success: true,
-    data: {
-      user: {
-        id: updated.id,
-        username: updated.username,
-        fullName: updated.fullName,
-        email: updated.email,
-        phone: updated.phone,
-        avatarUrl: updated.avatarUrl,
-        bio: updated.bio,
-        website: updated.website,
-        isVerified: updated.isVerified,
-        isPrivate: updated.isPrivate,
-        postsCount: updated.postsCount,
-        followersCount: updated.followersCount,
-        followingCount: updated.followingCount,
-        createdAt: updated.createdAt,
-      },
-    },
-  });
-});
-
-// User Settings
-// GET /v1/user/settings
-userRouter.get("/settings", async (c) => {
-  const user = getCurrentUser(c);
-
-  const settings = await db.query.userSettings.findFirst({
-    where: eq(schema.userSettings.userId, user.id),
-  });
-
-  if (!settings) {
-    // Create default settings
-    const [newSettings] = await db
-      .insert(schema.userSettings)
-      .values({ userId: user.id })
-      .returning();
-    return c.json({ success: true, data: { settings: newSettings } });
-  }
-
-  return c.json({ success: true, data: { settings } });
-});
-
-// PUT /v1/user/settings
-userRouter.put("/settings", zValidator("json", userSettingsSchema), async (c) => {
-  const user = getCurrentUser(c);
-  const data = c.req.valid("json");
-
-  const [updated] = await db
-    .insert(schema.userSettings)
-    .values({ userId: user.id, ...data, updatedAt: new Date() })
-    .onConflictDoUpdate({
-      target: schema.userSettings.userId,
-      set: { ...data, updatedAt: new Date() },
-    })
-    .returning();
-
-  return c.json({ success: true, data: { settings: updated } });
-});
-
-// Blocked users
-// GET /v1/users/me/blocked
-userRouter.get("/me/blocked", async (c) => {
-  const user = getCurrentUser(c);
-  const { page, perPage, offset } = getPagination(c);
-
-  const [blockedUsers, total] = await Promise.all([
-    db
-      .select({
-        id: schema.users.id,
-        username: schema.users.username,
-        fullName: schema.users.fullName,
-        avatarUrl: schema.users.avatarUrl,
-        isVerified: schema.users.isVerified,
-        isPrivate: schema.users.isPrivate,
-        blockedAt: schema.blocks.createdAt,
-      })
-      .from(schema.blocks)
-      .innerJoin(schema.users, eq(schema.users.id, schema.blocks.blockedId))
-      .where(eq(schema.blocks.blockerId, user.id))
-      .limit(perPage)
-      .offset(offset)
-      .orderBy(desc(schema.blocks.createdAt)),
-    db
-      .select({ count: count() })
-      .from(schema.blocks)
-      .where(eq(schema.blocks.blockerId, user.id)),
-  ]);
-
-  return c.json({
-    success: true,
-    data: {
-      items: blockedUsers,
-      page,
-      perPage,
-      total: total[0]?.count || 0,
-      hasMore: page * perPage < (total[0]?.count || 0),
-    },
-  });
-});
-
-// Close Friends
-// GET /v1/users/me/close-friends
-userRouter.get("/me/close-friends", async (c) => {
-  const user = getCurrentUser(c);
-
-  const closeFriends = await db
-    .select({
-      id: schema.users.id,
-      username: schema.users.username,
-      fullName: schema.users.fullName,
-      avatarUrl: schema.users.avatarUrl,
-      isVerified: schema.users.isVerified,
-    })
-    .from(schema.closeFriends)
-    .innerJoin(schema.users, eq(schema.users.id, schema.closeFriends.friendId))
-    .where(eq(schema.closeFriends.userId, user.id))
-    .orderBy(asc(schema.closeFriends.createdAt));
-
-  return c.json({ success: true, data: { items: closeFriends } });
-});
-
-// PUT /v1/users/me/close-friends (full-set replace)
-userRouter.put("/me/close-friends", zValidator("json", closeFriendsSchema), async (c) => {
-  const user = getCurrentUser(c);
-  const { friendIds } = c.req.valid("json");
-
-  // Delete all existing close friends
-  await db.delete(schema.closeFriends).where(eq(schema.closeFriends.userId, user.id));
-
-  // Insert new close friends
-  if (friendIds.length > 0) {
-    await db.insert(schema.closeFriends).values(
-      friendIds.map((friendId) => ({
-        userId: user.id,
-        friendId,
-      }))
-    );
-  }
-
-  return c.status(204);
 });
 
 export { userRouter };

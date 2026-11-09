@@ -264,6 +264,18 @@ Defined in `src/db/schema.ts` with full relations.
 
 ## 6. Authentication (Better Auth via Neon Auth)
 
+### Authentication Model
+
+| Aspect | Configuration |
+|--------|---------------|
+| **Provider** | Better Auth (via Neon Auth - Managed) |
+| **Password Hashing** | scrypt (`N=16384, r=16, p=1, dkLen=64`) — Better Auth defaults |
+| **Session Storage** | PostgreSQL `sessions` table |
+| **Token Format** | JWT with 7-day expiry |
+| **Token Verification** | JWKS endpoint at `{BETTER_AUTH_URL}/.well-known/jwks.json` |
+| **Email Verification** | Disabled for development (`requireEmailVerification: false`) |
+| **Rate Limiting** | 100 req/min for auth endpoints |
+
 ### Token Verification
 
 JWT tokens verified via JWKS endpoint:
@@ -468,7 +480,56 @@ const subscription = client.subscribe(
 
 ---
 
-## 11. Scheduled Jobs
+## 11. Security Hardening
+
+The following security measures are implemented across the stack:
+
+### Authentication & Session Security
+
+| Measure | Implementation |
+|---------|----------------|
+| **Refresh Token Rotation** | SHA-256 hashed tokens stored in DB, rotated on each use, revoked on logout/password change |
+| **Brute Force Protection** | 5 failed login attempts → 15min lockout (in-memory per IP+email, Redis-ready design) |
+| **Audit Logging** | All auth events logged: register, login, logout, logout-all, password change, email verify, token refresh |
+| **Password Reset Validation** | Redirect URL validated against CORS_ORIGIN allowlist |
+| **Device Token Expiry** | 90-day TTL with cleanup endpoint |
+| **Session Storage** | PostgreSQL `sessions` table with IP, user agent, expiry |
+
+### Transport Security
+
+| Measure | Implementation |
+|---------|----------------|
+| **CORS** | Strict `CORS_ORIGIN` required (comma-separated, no wildcard), credentials allowed |
+| **Security Headers** | Via `hono/secure-headers`: CSP, X-Frame-Options: DENY, X-Content-Type-Options: nosniff, Referrer-Policy: strict-origin-when-cross-origin, Cross-Origin-Embedder-Policy: require-corp, Cross-Origin-Opener-Policy: same-origin, Cross-Origin-Resource-Policy: same-origin |
+| **Rate Limiting** | Per-endpoint: Auth 100/min, Upload 30/min, API 100/min (Hono rate-limiter) |
+
+### Upload Security
+
+| Measure | Implementation |
+|---------|----------------|
+| **Magic Bytes Validation** | JPEG/PNG/WebP/HEIC/MP4/MOV/WebM verified against declared MIME type before storage |
+| **Pending Upload Cleanup** | Unconfirmed uploads deleted after 24h via cron |
+| **File Size Limits** | Images: 10MB, Videos: 100MB, Avatars: 10MB |
+
+### WebSocket Security
+
+| Measure | Implementation |
+|---------|----------------|
+| **Auth on Upgrade** | JWKS verification during handshake (not deferred to first message) |
+| **Message Size Limit** | 16KB max message size |
+| **Heartbeat Jitter** | 30s ping/pong with random jitter to prevent timing attacks |
+
+### Database Security
+
+| Measure | Implementation |
+|---------|----------------|
+| **Raw SQL Replaced** | All raw SQL replaced with Drizzle type-safe query builders |
+| **Parameterized Queries** | Drizzle ORM prevents SQL injection by design |
+| **Schema Validation** | Zod validation on all route inputs |
+
+---
+
+## 12. Scheduled Jobs
 
 ### Story Expiry (Every minute)
 

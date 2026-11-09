@@ -182,15 +182,29 @@ This document tracks the actual implementation status against the [BACKEND_SYSTE
 ## 📋 To Do
 
 ### Production Hardening
-- [ ] Rate limiting per endpoint type (Hono rate-limiter)
-- [ ] Helmet CSP configuration
+- [x] Rate limiting per endpoint type (Hono rate-limiter)
+- [x] Helmet CSP configuration (via hono/secure-headers)
 - [ ] Cursor-based pagination for feeds (posts, reels, conversations)
 - [ ] pg_trgm migration for search
 - [ ] Database indexes review
 - [ ] Request ID logging
 - [ ] Metrics endpoint (Prometheus)
 - [ ] Error tracking (Sentry integration)
-- [ ] Structured audit logging
+- [x] Structured audit logging (all auth endpoints)
+
+### Security Hardening (Complete)
+- [x] C1: Mutual follow requirement for group conversation creation
+- [x] C2: WebSocket auth moved to upgrade handshake, 16KB message limit, heartbeat jitter
+- [x] C3: Refresh token rotation with SHA-256 hashing, brute force protection (5 attempts → 15min lockout), audit logging, password reset redirect validation
+- [x] H1: Magic bytes validation for file uploads (JPEG/PNG/WebP/HEIC/MP4/MOV/WebM)
+- [x] H2: CORS_ORIGIN required (no wildcard default), secure headers (CSP, X-Frame-Options, etc.)
+- [x] H3: Replaced raw SQL with Drizzle helpers (notExists, inArray, not)
+- [x] H4: Password reset redirect validation against CORS_ORIGIN allowlist
+- [x] M3: Brute force protection (IP+email based, in-memory with Redis-ready design)
+- [x] M4: Security headers via Hono secureHeaders middleware
+- [x] M6: Fixed password reset redirect validation
+- [x] M7: Device token expiry (90 days) and cleanup endpoint
+- [x] M8: Pending upload cleanup cron (24h for unconfirmed uploads)
 
 ### Testing & CI
 - [ ] Unit tests for services
@@ -244,17 +258,20 @@ npm run dev
 npx tsx src/server.ts
 ```
 
-### Login Test (2026-11-09)
-```bash
-# Test login with seeded user
-curl -X POST http://localhost:3000/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "maiduong1@example.com", "password": "password123"}'
-# Returns: 200 OK with user data, accessToken, refreshToken, expiresAt
-```
+### Authentication Model
 
-### Seeded Test Accounts (2026-11-09)
-All 20 users use password: `password123`
+The project uses **Better Auth** (via Neon Auth) with the following configuration:
+
+- **Password Hashing**: scrypt with parameters `N=16384, r=16, p=1, dkLen=64` (Better Auth defaults)
+- **Session Management**: JWT tokens with 7-day expiry, stored in `sessions` table
+- **Token Verification**: JWKS endpoint at `{BETTER_AUTH_URL}/.well-known/jwks.json`
+- **Email Verification**: Disabled for development (`requireEmailVerification: false`)
+- **Rate Limiting**: 100 requests/minute for auth endpoints
+
+### Seeded Test Accounts
+
+All 20 seeded users use password: `password123` (scrypt hashed)
+
 | Email | Username | Full Name |
 |-------|----------|-----------|
 | maiduong1@example.com | maiduong1 | Mai Duong |
@@ -278,7 +295,17 @@ All 20 users use password: `password123`
 | tuanduong19@example.com | tuanduong19 | Tuan Duong |
 | linhtruong20@example.com | linhtruong20 | Linh Truong |
 
----
+### Login Example
+
+```bash
+curl -X POST http://localhost:3000/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "maiduong1@example.com", "password": "password123"}'
+```
+
+Returns: `{ success: true, data: { user, accessToken, refreshToken, expiresAt } }`
+
+### Recent Verification
 
 ## Next Steps Priority
 

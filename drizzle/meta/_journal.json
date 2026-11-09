@@ -8,6 +8,20 @@
       "when": 1793862748521,
       "tag": "0000_watery_karnak",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794192063299,
+      "tag": "0001_gorgeous_maddog",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794195775958,
+      "tag": "0002_hesitant_hiroim",
+      "breakpoints": true
     }
   ]
 }

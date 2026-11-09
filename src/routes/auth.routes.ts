@@ -5,8 +5,82 @@ import { auth } from "../config/auth";
 import { authMiddleware, getCurrentUser } from "../middleware/auth";
 import { db } from "../db/client";
 import * as schema from "../db/schema";
-import { eq, and, gt } from "drizzle-orm";
+import { eq, and, gt, isNull } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
+import { createHash, randomBytes } from "crypto";
+import { env } from "../config/env";
+
+// Simple audit logging (use proper logging service in production)
+interface AuditLogEntry {
+  event: string;
+  userId?: string;
+  ip?: string;
+  userAgent?: string;
+  metadata?: Record<string, unknown>;
+  timestamp?: string;
+  success: boolean;
+}
+
+function auditLog(entry: AuditLogEntry) {
+  const logEntry = {
+    ...entry,
+    timestamp: new Date().toISOString(),
+  };
+  // In production, send to structured logging service (Datadog, Splunk, etc.)
+  console.log(`[AUDIT] ${JSON.stringify(logEntry)}`);
+}
+
+// Simple in-memory brute force tracking (use Redis in production)
+const failedAttempts = new Map<string, { count: number; lockedUntil: number }>();
+
+function getClientKey(c: any, email: string): string {
+  const ip = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown";
+  return `${email}:${ip}`;
+}
+
+function checkBruteForce(key: string): { allowed: boolean; retryAfter?: number } {
+  const now = Date.now();
+  const record = failedAttempts.get(key);
+
+  if (!record) {
+    return { allowed: true };
+  }
+
+  // Clean up expired locks
+  if (record.lockedUntil && record.lockedUntil < now) {
+    failedAttempts.delete(key);
+    return { allowed: true };
+  }
+
+  // Check if locked
+  if (record.lockedUntil && record.lockedUntil > now) {
+    return { allowed: false, retryAfter: Math.ceil((record.lockedUntil - now) / 1000) };
+  }
+
+  // Check if too many attempts (5 attempts = lock for 15 minutes)
+  if (record.count >= 5) {
+    const lockUntil = now + 15 * 60 * 1000;
+    failedAttempts.set(key, { count: record.count, lockedUntil: lockUntil });
+    return { allowed: false, retryAfter: 15 * 60 };
+  }
+
+  return { allowed: true };
+}
+
+function recordFailedAttempt(key: string) {
+  const now = Date.now();
+  const record = failedAttempts.get(key);
+
+  if (!record) {
+    failedAttempts.set(key, { count: 1, lockedUntil: 0 });
+  } else {
+    failedAttempts.set(key, { count: record.count + 1, lockedUntil: record.lockedUntil });
+  }
+}
+
+function clearFailedAttempts(key: string) {
+  failedAttempts.delete(key);
+}
 
 // Validation schemas
 const registerSchema = z.object({
@@ -27,6 +101,51 @@ const changePasswordSchema = z.object({
   newPassword: z.string().min(8).max(128),
 });
 
+// Helper functions for refresh token handling
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function generateRefreshToken(): string {
+  return randomBytes(32).toString("hex");
+}
+
+async function createRefreshToken(userId: string, sessionId: string, token: string) {
+  const tokenHash = hashToken(token);
+  const expiresAt = new Date(Date.now() + 60 * 60 * 24 * 30 * 1000); // 30 days
+  await db.insert(schema.refreshTokens).values({
+    userId,
+    tokenHash,
+    sessionId,
+    expiresAt,
+  });
+}
+
+async function verifyAndRotateRefreshToken(refreshToken: string) {
+  const tokenHash = hashToken(refreshToken);
+
+  const storedToken = await db.query.refreshTokens.findFirst({
+    where: and(
+      eq(schema.refreshTokens.tokenHash, tokenHash),
+      gt(schema.refreshTokens.expiresAt, new Date()),
+      isNull(schema.refreshTokens.revokedAt) // Not revoked
+    ),
+    with: { session: true },
+  });
+
+  if (!storedToken) {
+    return null;
+  }
+
+  // Revoke the used refresh token
+  await db
+    .update(schema.refreshTokens)
+    .set({ revokedAt: new Date() })
+    .where(eq(schema.refreshTokens.id, storedToken.id));
+
+  return storedToken;
+}
+
 // Create auth router
 const authRouter = new Hono();
 
@@ -35,6 +154,9 @@ authRouter.post(
   "/register",
   zValidator("json", registerSchema),
   async (c) => {
+    const ip = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown";
+    const userAgent = c.req.header("user-agent") || "unknown";
+
     try {
       const { email, password, username, fullName, phone } = c.req.valid("json");
 
@@ -43,6 +165,7 @@ authRouter.post(
         where: eq(schema.users.username, username),
       });
       if (existingUser) {
+        auditLog({ event: "REGISTER_FAILED", ip, userAgent, metadata: { email, reason: "username_taken" }, success: false });
         throw new HTTPException(409, {
           message: "Username already taken",
           res: c.json({ success: false, error: "USERNAME_TAKEN", message: "Username already taken" }),
@@ -66,6 +189,7 @@ authRouter.post(
         });
       } catch (e) {
         console.error("[Better Auth] signUpEmail error:", e);
+        auditLog({ event: "REGISTER_FAILED", ip, userAgent, metadata: { email, reason: "auth_error" }, success: false });
         throw new HTTPException(500, {
           message: "Registration failed",
           res: c.json({ success: false, error: "REGISTRATION_FAILED", message: e instanceof Error ? e.message : "Failed to create account" }),
@@ -74,9 +198,19 @@ authRouter.post(
 
       if (!result?.user) {
         console.error("[Auth] No user returned from Better Auth:", result);
+        auditLog({ event: "REGISTER_FAILED", ip, userAgent, metadata: { email, reason: "no_user" }, success: false });
         throw new HTTPException(500, {
           message: "Registration failed",
           res: c.json({ success: false, error: "REGISTRATION_FAILED", message: "Failed to create account" }),
+        });
+      }
+
+      if (!result.token) {
+        console.error("[Auth] No token returned from Better Auth:", result);
+        auditLog({ event: "REGISTER_FAILED", ip, userAgent, metadata: { email, reason: "no_token" }, success: false });
+        throw new HTTPException(500, {
+          message: "Registration failed",
+          res: c.json({ success: false, error: "REGISTRATION_FAILED", message: "Failed to create session" }),
         });
       }
 
@@ -84,6 +218,17 @@ authRouter.post(
       const user = await db.query.users.findFirst({
         where: eq(schema.users.id, result.user.id),
       });
+
+      // Fetch the session created by Better Auth using the token
+      const session = await db.query.sessions.findFirst({
+        where: eq(schema.sessions.token, result.token),
+      });
+
+      // Create refresh token for the new session
+      const refreshToken = generateRefreshToken();
+      await createRefreshToken(result.user.id, session?.id || "", refreshToken);
+
+      auditLog({ event: "REGISTER_SUCCESS", userId: result.user.id, ip, userAgent, metadata: { email, username }, success: true });
 
       return c.json({
         success: true,
@@ -120,7 +265,7 @@ authRouter.post(
             createdAt: result.user.createdAt,
           },
           accessToken: result.token,
-          refreshToken: result.token,
+          refreshToken,
           expiresAt: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7, // 7 days
         },
       }, 201);
@@ -141,31 +286,64 @@ authRouter.post(
   "/login",
   zValidator("json", loginSchema),
   async (c) => {
+    const ip = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown";
+    const userAgent = c.req.header("user-agent") || "unknown";
+
     try {
       const { email, password } = c.req.valid("json");
+
+      // Brute force protection
+      const clientKey = getClientKey(c, email);
+      const bruteForceCheck = checkBruteForce(clientKey);
+
+      if (!bruteForceCheck.allowed) {
+        auditLog({ event: "LOGIN_BLOCKED", ip, userAgent, metadata: { email, reason: "brute_force" }, success: false });
+        throw new HTTPException(429, {
+          message: `Too many failed login attempts. Please try again in ${bruteForceCheck.retryAfter} seconds.`,
+          res: c.json({
+            success: false,
+            error: "BRUTE_FORCE_LOCKED",
+            message: `Too many failed login attempts. Please try again in ${bruteForceCheck.retryAfter} seconds.`
+          }),
+        });
+      }
 
       const result = await auth.api.signInEmail({
         body: { email, password },
       });
 
-      console.log("[Auth] signInEmail result:", JSON.stringify(result, null, 2));
-
       if (!result?.user || !result?.token) {
+        recordFailedAttempt(clientKey);
+        auditLog({ event: "LOGIN_FAILED", ip, userAgent, metadata: { email, reason: "invalid_credentials" }, success: false });
         throw new HTTPException(401, {
           message: "Invalid credentials",
           res: c.json({ success: false, error: "INVALID_CREDENTIALS", message: "Invalid email or password" }),
         });
       }
 
+      // Clear failed attempts on successful login
+      clearFailedAttempts(clientKey);
+
       // Get full user data from our database
       const user = await db.query.users.findFirst({
         where: eq(schema.users.id, result.user.id),
       });
 
+      // Fetch the session created by Better Auth using the token
+      const session = await db.query.sessions.findFirst({
+        where: eq(schema.sessions.token, result.token),
+      });
+
+      // Create refresh token for the new session
+      const refreshToken = generateRefreshToken();
+      await createRefreshToken(result.user.id, session?.id || "", refreshToken);
+
       // Return session token for Bearer token authentication
-      // For mobile: return accessToken (sessionToken), refreshToken (same), expiresAt
+      // For mobile: return accessToken (sessionToken), refreshToken (separate), expiresAt
       const sessionToken = result.token;
       const expiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7; // 7 days from now
+
+      auditLog({ event: "LOGIN_SUCCESS", userId: result.user.id, ip, userAgent, metadata: { email }, success: true });
 
       return c.json({
         success: true,
@@ -202,7 +380,7 @@ authRouter.post(
             createdAt: result.user.createdAt,
           },
           accessToken: sessionToken,
-          refreshToken: sessionToken,
+          refreshToken,
           expiresAt,
         },
       });
@@ -223,9 +401,25 @@ authRouter.post(
   authMiddleware,
   async (c) => {
     try {
+      const user = getCurrentUser(c);
+      const ip = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown";
+      const userAgent = c.req.header("user-agent") || "unknown";
+
+      // Get the current session from context
+      const session = c.get("session");
+
+      // Revoke refresh tokens for this session
+      if (session?.sessionId) {
+        await db
+          .update(schema.refreshTokens)
+          .set({ revokedAt: new Date() })
+          .where(eq(schema.refreshTokens.sessionId, session.sessionId));
+      }
+
       await auth.api.signOut({
         headers: c.req.raw.headers,
       });
+      auditLog({ event: "LOGOUT", userId: user.id, ip, userAgent, success: true });
       return c.json({ success: true, data: { message: "Logged out successfully" } });
     } catch (error) {
       console.error("[Auth] Logout error:", error);
@@ -240,10 +434,20 @@ authRouter.post(
   authMiddleware,
   async (c) => {
     try {
-      // revokeSessions doesn't take a body, just uses the current session from headers
+      const user = getCurrentUser(c);
+      const ip = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown";
+      const userAgent = c.req.header("user-agent") || "unknown";
+
+      // Revoke all refresh tokens for this user
+      await db
+        .update(schema.refreshTokens)
+        .set({ revokedAt: new Date() })
+        .where(eq(schema.refreshTokens.userId, user.id));
+
       await auth.api.revokeSessions({
         headers: c.req.raw.headers,
       });
+      auditLog({ event: "LOGOUT_ALL_DEVICES", userId: user.id, ip, userAgent, success: true });
       return c.json({ success: true, data: { message: "Logged out from all devices" } });
     } catch (error) {
       console.error("[Auth] Logout all error:", error);
@@ -263,6 +467,9 @@ authRouter.post(
   async (c) => {
     try {
       const { currentPassword, newPassword } = c.req.valid("json");
+      const user = getCurrentUser(c);
+      const ip = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown";
+      const userAgent = c.req.header("user-agent") || "unknown";
 
       await auth.api.changePassword({
         body: {
@@ -272,6 +479,14 @@ authRouter.post(
         },
         headers: c.req.raw.headers,
       });
+
+      // Revoke all refresh tokens for this user (password change = token invalidation)
+      await db
+        .update(schema.refreshTokens)
+        .set({ revokedAt: new Date() })
+        .where(eq(schema.refreshTokens.userId, user.id));
+
+      auditLog({ event: "PASSWORD_CHANGE", userId: user.id, ip, userAgent, success: true });
 
       return c.json({ success: true, data: { message: "Password changed successfully" } });
     } catch (error) {
@@ -292,8 +507,14 @@ authRouter.post(
   async (c) => {
     try {
       const { email } = c.req.valid("json");
+
+      // Validate redirect URL against allowlist
+      const allowedOrigins = env.CORS_ORIGIN.split(",").map((o) => o.trim());
+      const redirectOrigin = allowedOrigins[0]; // Use first allowed origin
+      const redirectTo = `${redirectOrigin}/reset-password`;
+
       await auth.api.requestPasswordReset({
-        body: { email, redirectTo: `${process.env.CORS_ORIGIN}/reset-password` },
+        body: { email, redirectTo },
       });
       return c.json({ success: true, data: { message: "Password reset email sent" } });
     } catch (error) {
@@ -310,10 +531,16 @@ authRouter.post(
   async (c) => {
     try {
       const { token } = c.req.valid("json");
+      const ip = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown";
+      const userAgent = c.req.header("user-agent") || "unknown";
       await auth.api.verifyEmail({ query: { token } });
+      auditLog({ event: "EMAIL_VERIFIED", ip, userAgent, success: true });
       return c.json({ success: true, data: { message: "Email verified successfully" } });
     } catch (error) {
+      const ip = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown";
+      const userAgent = c.req.header("user-agent") || "unknown";
       console.error("[Auth] Verify email error:", error);
+      auditLog({ event: "EMAIL_VERIFY_FAILED", ip, userAgent, metadata: { reason: "invalid_token" }, success: false });
       throw new HTTPException(400, {
         message: "Invalid or expired verification token",
         res: c.json({ success: false, error: "INVALID_TOKEN", message: "Invalid or expired verification token" }),
@@ -327,12 +554,16 @@ authRouter.post(
   "/resend-verification",
   zValidator("json", z.object({ email: z.string().email() })),
   async (c) => {
+    const ip = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown";
+    const userAgent = c.req.header("user-agent") || "unknown";
+    const { email } = c.req.valid("json");
     try {
-      const { email } = c.req.valid("json");
       await auth.api.sendVerificationEmail({ body: { email } });
+      auditLog({ event: "VERIFICATION_EMAIL_SENT", ip, userAgent, metadata: { email }, success: true });
       return c.json({ success: true, data: { message: "Verification email sent" } });
     } catch (error) {
       console.error("[Auth] Resend verification error:", error);
+      auditLog({ event: "VERIFICATION_EMAIL_FAILED", ip, userAgent, metadata: { email }, success: false });
       return c.json({ success: true, data: { message: "If the email exists, a verification email has been sent" } });
     }
   }
@@ -372,8 +603,11 @@ authRouter.get(
 authRouter.post(
   "/refresh",
   async (c) => {
+    const ip = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown";
+    const userAgent = c.req.header("user-agent") || "unknown";
+
     try {
-      // Try to get refresh token from Authorization header (Bearer token)
+      // Get refresh token from Authorization header (Bearer token)
       const authHeader = c.req.header("Authorization");
       let refreshToken = "";
 
@@ -381,69 +615,63 @@ authRouter.post(
         refreshToken = authHeader.slice(7);
       }
 
-      // If no Bearer token, try to get from cookies (for web)
       if (!refreshToken) {
-        const session = await auth.api.getSession({
-          headers: c.req.raw.headers,
-        });
-        if (session) {
-          // Extend session expiry in database
-          await db
-            .update(schema.sessions)
-            .set({
-              expiresAt: new Date(Date.now() + 60 * 60 * 24 * 7 * 1000), // Extend 7 days
-              updatedAt: new Date(),
-            })
-            .where(eq(schema.sessions.token, session.session.id));
-
-          const newExpiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7;
-          return c.json({
-            success: true,
-            data: {
-              accessToken: session.session.token,
-              refreshToken: session.session.token,
-              expiresAt: newExpiresAt,
-            },
-          });
-        }
+        auditLog({ event: "TOKEN_REFRESH_FAILED", ip, userAgent, metadata: { reason: "no_token" }, success: false });
         throw new HTTPException(401, {
-          message: "No valid session",
-          res: c.json({ success: false, error: "NO_SESSION", message: "No valid session" }),
+          message: "No refresh token provided",
+          res: c.json({ success: false, error: "NO_REFRESH_TOKEN", message: "No refresh token provided" }),
         });
       }
 
-      // Validate refresh token (Bearer token) against sessions table
-      const sessionRecord = await db.query.sessions.findFirst({
-        where: and(
-          eq(schema.sessions.token, refreshToken),
-          gt(schema.sessions.expiresAt, new Date()) // Not expired
-        ),
-      });
+      // Verify and rotate refresh token
+      const storedToken = await verifyAndRotateRefreshToken(refreshToken);
 
-      if (!sessionRecord) {
+      if (!storedToken) {
+        auditLog({ event: "TOKEN_REFRESH_FAILED", ip, userAgent, metadata: { reason: "invalid_token" }, success: false });
         throw new HTTPException(401, {
           message: "Invalid or expired refresh token",
           res: c.json({ success: false, error: "INVALID_REFRESH_TOKEN", message: "Invalid or expired refresh token" }),
         });
       }
 
-      // Extend session expiry in database (sliding window)
-      const newExpiresAt = new Date(Date.now() + 60 * 60 * 24 * 7 * 1000); // 7 days from now
+      // Check if session is still valid
+      if (!storedToken.session || storedToken.session.expiresAt < new Date()) {
+        // Revoke all refresh tokens for this session
+        await db
+          .update(schema.refreshTokens)
+          .set({ revokedAt: new Date() })
+          .where(eq(schema.refreshTokens.sessionId, storedToken.sessionId));
+
+        auditLog({ event: "TOKEN_REFRESH_FAILED", ip, userAgent, metadata: { reason: "session_expired" }, success: false });
+        throw new HTTPException(401, {
+          message: "Session expired",
+          res: c.json({ success: false, error: "SESSION_EXPIRED", message: "Session expired, please login again" }),
+        });
+      }
+
+      // Extend session expiry in database (sliding window - max 7 days from now)
+      const newExpiresAt = new Date(Date.now() + 60 * 60 * 24 * 7 * 1000);
       await db
         .update(schema.sessions)
         .set({
           expiresAt: newExpiresAt,
           updatedAt: new Date(),
         })
-        .where(eq(schema.sessions.id, sessionRecord.id));
+        .where(eq(schema.sessions.id, storedToken.sessionId));
+
+      // Create new refresh token
+      const newRefreshToken = generateRefreshToken();
+      await createRefreshToken(storedToken.userId, storedToken.sessionId, newRefreshToken);
 
       const expiresAtUnix = Math.floor(newExpiresAt.getTime() / 1000);
+
+      auditLog({ event: "TOKEN_REFRESH_SUCCESS", userId: storedToken.userId, ip, userAgent, success: true });
 
       return c.json({
         success: true,
         data: {
-          accessToken: sessionRecord.token,
-          refreshToken: sessionRecord.token,
+          accessToken: storedToken.session.token,
+          refreshToken: newRefreshToken,
           expiresAt: expiresAtUnix,
         },
       });

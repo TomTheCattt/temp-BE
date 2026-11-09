@@ -3,6 +3,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { db } from "../db/client";
 import * as schema from "../db/schema";
 import { env } from "../config/env";
+import bcrypt from "bcrypt";
 
 const CORS_ORIGIN = env.CORS_ORIGIN;
 const BETTER_AUTH_SECRET = env.BETTER_AUTH_SECRET;
@@ -17,12 +18,22 @@ export const auth = betterAuth({
       session: schema.sessions,
       account: schema.accounts,
       verification: schema.verifications,
+      refreshToken: schema.refreshTokens,
     },
   }),
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: false,
-    autoSignIn: false,
+    autoSignIn: true,
+    password: {
+      // Use bcrypt to match seeded password hashes (bcrypt with cost 10)
+      hash: async (password: string) => {
+        return await bcrypt.hash(password, 10);
+      },
+      verify: async ({ password, hash }) => {
+        return await bcrypt.compare(password, hash);
+      },
+    },
   },
   emailVerification: {
     sendOnSignUp: true,

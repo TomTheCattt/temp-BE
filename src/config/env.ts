@@ -12,7 +12,7 @@ const envSchema = z.object({
   FIREBASE_CLIENT_EMAIL: z.string().optional(),
   FIREBASE_STORAGE_BUCKET: z.string().optional(),
   FIREBASE_WEB_API_KEY: z.string().optional(),
-  CORS_ORIGIN: z.string().default('*'),
+  CORS_ORIGIN: z.string().min(1), // Required, no wildcard default
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   BETTER_AUTH_SECRET: z.string().min(1),
   BETTER_AUTH_URL: z.string().min(1),

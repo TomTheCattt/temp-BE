@@ -119,6 +119,28 @@ The project supports two deployment models:
 
 Both share the same PostgreSQL database schema (defined in both Prisma and Drizzle).
 
+### Security Hardening
+
+The following security measures are implemented:
+
+| Category | Feature | Implementation |
+|----------|---------|----------------|
+| **Auth** | Refresh Token Rotation | SHA-256 hashed tokens, rotation on each use, DB-backed |
+| **Auth** | Brute Force Protection | 5 failed attempts → 15min lockout (IP+email) |
+| **Auth** | Audit Logging | All auth events logged (login, logout, register, token refresh, password change, email verification) |
+| **Auth** | Password Reset Validation | Redirect URL validated against CORS_ORIGIN allowlist |
+| **Auth** | Device Token Expiry | 90-day TTL with cleanup endpoint |
+| **Transport** | CORS | Strict CORS_ORIGIN required (no wildcard), credentials allowed |
+| **Transport** | Security Headers | CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, COEP, COOP, CORP via `hono/secure-headers` |
+| **Transport** | Rate Limiting | Per-endpoint type: Auth 100/min, Upload 30/min, API 100/min |
+| **Uploads** | Magic Bytes Validation | JPEG/PNG/WebP/HEIC/MP4/MOV/WebM verified against declared MIME type |
+| **Uploads** | Pending Upload Cleanup | Unconfirmed uploads deleted after 24h (cron) |
+| **WebSocket** | Auth on Upgrade | JWKS verification during handshake, not first message |
+| **WebSocket** | Message Size Limit | 16KB max message size |
+| **WebSocket** | Heartbeat Jitter | 30s ping/pong with random jitter |
+| **Database** | Raw SQL Replaced | All raw SQL replaced with Drizzle type-safe helpers |
+| **Database** | Parameterized Queries | Drizzle ORM prevents SQL injection |
+
 ### Neon Functions Configuration
 
 Defined in `neon.ts`:
@@ -137,6 +159,17 @@ Both functions share:
 ### Authentication
 
 **Better Auth** (via Neon Auth) replaces Firebase Auth:
+
+| Aspect | Configuration |
+|--------|---------------|
+| **Password Hashing** | scrypt (`N=16384, r=16, p=1, dkLen=64`) — Better Auth defaults |
+| **Session Storage** | PostgreSQL `sessions` table |
+| **Token Format** | JWT with 7-day expiry |
+| **Token Verification** | JWKS at `{BETTER_AUTH_URL}/.well-known/jwks.json` |
+| **Email Verification** | Disabled for dev (`requireEmailVerification: false`) |
+| **Rate Limiting** | 100 req/min for auth endpoints |
+
+Features:
 - Email/password with verification
 - JWT tokens with JWKS verification
 - Sessions stored in database
@@ -308,7 +341,7 @@ APP_ENVIRONMENT=dev
 **Important iOS Notes:**
 - Use `/v1/user/profile` (not `/v1/users/me`) for profile GET/PUT
 - Send `name` field in PUT `/v1/user/profile` (not `fullName`)
-- Decode snake_case: `decoder.keyDecodingStrategy = .convertFromSnakeCase`
+- **Backend returns camelCase** — no snake_case decoding needed (remove `.convertFromSnakeCase`)
 - Attach Better Auth session token to every request: `Authorization: Bearer <token>`
 - WebSocket: Connect with `ws://host/ws?token=<session_token>`
 - Use `pendingUploadId` from upload response in Post/Story/Reel creation

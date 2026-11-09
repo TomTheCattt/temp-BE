@@ -91,9 +91,11 @@ export const deviceTokens = pgTable(
     platform: devicePlatformEnum("platform").default("IOS").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
   },
   (table) => ({
     userIdIdx: index("device_tokens_user_id_idx").on(table.userId),
+    expiresAtIdx: index("device_tokens_expires_at_idx").on(table.expiresAt),
   })
 );
 
@@ -508,6 +510,30 @@ export const sessions = pgTable(
   })
 );
 
+// Refresh tokens (for rotation)
+export const refreshTokens = pgTable(
+  "refresh_tokens",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: varchar("token_hash", { length: 255 }).unique().notNull(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => ({
+    userIdIdx: index("refresh_tokens_user_id_idx").on(table.userId),
+    tokenHashIdx: uniqueIndex("refresh_tokens_token_hash_idx").on(table.tokenHash),
+    sessionIdIdx: index("refresh_tokens_session_id_idx").on(table.sessionId),
+    expiresAtIdx: index("refresh_tokens_expires_at_idx").on(table.expiresAt),
+  })
+);
+
 export const accounts = pgTable(
   "accounts",
   {
@@ -575,8 +601,14 @@ export const usersRelations = relations(users, ({ many, one }) => ({
   accounts: many(accounts),
 }));
 
-export const sessionsRelations = relations(sessions, ({ one }) => ({
+export const sessionsRelations = relations(sessions, ({ one, many }) => ({
   user: one(users, { fields: [sessions.userId], references: [users.id] }),
+  refreshTokens: many(refreshTokens),
+}));
+
+export const refreshTokensRelations = relations(refreshTokens, ({ one }) => ({
+  user: one(users, { fields: [refreshTokens.userId], references: [users.id] }),
+  session: one(sessions, { fields: [refreshTokens.sessionId], references: [sessions.id] }),
 }));
 
 export const accountsRelations = relations(accounts, ({ one }) => ({
@@ -650,6 +682,7 @@ export const schema = {
   closeFriends,
   pendingUploads,
   sessions,
+  refreshTokens,
   accounts,
   verifications,
 };
@@ -666,3 +699,5 @@ export type NewMessage = typeof messages.$inferInsert;
 export type Conversation = typeof conversations.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
 export type UserSettings = typeof userSettings.$inferSelect;
+export type RefreshToken = typeof refreshTokens.$inferSelect;
+export type NewRefreshToken = typeof refreshTokens.$inferInsert;

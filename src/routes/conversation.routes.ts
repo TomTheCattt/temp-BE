@@ -4,7 +4,7 @@ import { z } from "zod";
 import { authMiddleware, getCurrentUser } from "../middleware/auth";
 import { db } from "../db/client";
 import * as schema from "../db/schema";
-import { eq, and, desc, asc, count, sql, inArray, lt } from "drizzle-orm";
+import { eq, and, or, desc, asc, count, sql, inArray, lt } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 
 const createConversationSchema = z.object({
@@ -102,6 +102,36 @@ conversationRouter.post("/", zValidator("json", createConversationSchema), async
 
   if (participants.length !== participantIds.length) {
     throw new HTTPException(400, { message: "One or more participants not found" });
+  }
+
+  // Prevent adding self as participant (already added as creator)
+  if (participantIds.includes(user.id)) {
+    throw new HTTPException(400, { message: "Cannot add yourself as participant" });
+  }
+
+  // Authorization: For group conversations, require mutual follow with all participants
+  // For 1-on-1, allow if users have any connection (follow/followed) or are creating first contact
+  if (groupName && participantIds.length > 0) {
+    // Check mutual follow for each participant
+    for (const participantId of participantIds) {
+      const mutualFollow = await db
+        .select({ id: schema.follows.id })
+        .from(schema.follows)
+        .where(
+          or(
+            and(eq(schema.follows.followerId, user.id), eq(schema.follows.followingId, participantId)),
+            and(eq(schema.follows.followerId, participantId), eq(schema.follows.followingId, user.id))
+          )
+        )
+        .limit(1);
+
+      if (mutualFollow.length === 0) {
+        throw new HTTPException(403, {
+          message: `Cannot create group with user ${participantId}: mutual follow required`,
+          res: c.json({ success: false, error: "MUTUAL_FOLLOW_REQUIRED", message: "Mutual follow required to create group conversation" }),
+        });
+      }
+    }
   }
 
   // Check if 1-on-1 conversation already exists
