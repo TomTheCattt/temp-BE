@@ -42,32 +42,32 @@ All 20 seeded users use password: `password123`
 
 | Email | Username | Full Name |
 |-------|----------|-----------|
-| `lanle1@example.com` | `lanle1` | Lan Le |
-| `thaotruong2@example.com` | `thaotruong2` | Thao Truong |
-| `hado3@example.com` | `hado3` | Ha Do |
-| `hahua4@example.com` | `hahua4` | Ha Hua |
-| `taiho5@example.com` | `taiho5` | Tai Ho |
-| `phonglam6@example.com` | `phonglam6` | Phong Lam |
-| `vyho7@example.com` | `vyho7` | Vy Ho |
-| `anduong8@example.com` | `anduong8` | An Duong |
-| `nhihuynh9@example.com` | `nhihuynh9` | Nhi Huynh |
-| `baovu10@example.com` | `baovu10` | Bao Vu |
-| `quynhtran11@example.com` | `quynhtran11` | Quynh Tran |
-| `ngoclam12@example.com` | `ngoclam12` | Ngoc Lam |
-| `datly13@example.com` | `datly13` | Dat Ly |
-| `vybui14@example.com` | `vybui14` | Vy Bui |
-| `namphan15@example.com` | `namphan15` | Nam Phan |
-| `vyle16@example.com` | `vyle16` | Vy Le |
-| `phongbui17@example.com` | `phongbui17` | Phong Bui |
-| `vinhvo18@example.com` | `vinhvo18` | Vinh Vo |
-| `nhido19@example.com` | `nhido19` | Nhi Do |
-| `datdo20@example.com` | `datdo20` | Dat Do |
+| `maiduong1@example.com` | `maiduong1` | Mai Duong |
+| `sonphan2@example.com` | `sonphan2` | Son Phan |
+| `ducpham3@example.com` | `ducpham3` | Duc Pham |
+| `hienlam4@example.com` | `hienlam4` | Hien Lam |
+| `vyvu5@example.com` | `vyvu5` | Vy Vu |
+| `mypham6@example.com` | `mypham6` | My Pham |
+| `baodang7@example.com` | `baodang7` | Bao Dang |
+| `maile8@example.com` | `maile8` | Mai Le |
+| `huyhua9@example.com` | `huyhua9` | Huy Hua |
+| `mynguyen10@example.com` | `mynguyen10` | My Nguyen |
+| `mailam11@example.com` | `mailam11` | Mai Lam |
+| `lanngo12@example.com` | `lanngo12` | Lan Ngo |
+| `ngocvo13@example.com` | `ngocvo13` | Ngoc Vo |
+| `sonhoang14@example.com` | `sonhoang14` | Son Hoang |
+| `sonngo15@example.com` | `sonngo15` | Son Ngo |
+| `khoahuynh16@example.com` | `khoahuynh16` | Khoa Huynh |
+| `tuanngo17@example.com` | `tuanngo17` | Tuan Ngo |
+| `quynhvo18@example.com` | `quynhvo18` | Quynh Vo |
+| `tuanduong19@example.com` | `tuanduong19` | Tuan Duong |
+| `linhtruong20@example.com` | `linhtruong20` | Linh Truong |
 
 **Example Login:**
 ```bash
 curl -X POST http://localhost:3000/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email": "lanle1@example.com", "password": "password123"}'
+  -d '{"email": "maiduong1@example.com", "password": "password123"}'
 ```
 
 ---
