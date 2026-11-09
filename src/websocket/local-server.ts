@@ -1,12 +1,12 @@
 // Local WebSocket Server for Development
 // Integrates with Hono's built-in WebSocket support and verifies Better Auth tokens
+// Uses database lookup for session tokens (Better Auth uses opaque tokens by default)
 
 import { WebSocketServer, WebSocket, RawData } from 'ws';
 import { URL } from 'url';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import { eq, and } from 'drizzle-orm';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
 import * as schema from '../db/schema';
 import { env } from '../config/env';
 
@@ -54,17 +54,6 @@ const pool = new Pool({
 });
 
 export const db = drizzle(pool, { schema });
-
-// JWKS for Better Auth token verification
-const jwksUrl = `${env.BETTER_AUTH_URL}/.well-known/jwks.json`;
-const jwks = createRemoteJWKSet(new URL(jwksUrl));
-
-interface AuthJWTPayload extends JWTPayload {
-  sub: string;
-  sessionId: string;
-  email: string;
-  username?: string;
-}
 
 function validateMessage(msg: unknown): WSMessage | null {
   if (typeof msg !== "object" || msg === null) return null;
@@ -183,31 +172,25 @@ function rawToText(raw: RawData): string {
 
 async function verifyBetterAuthToken(token: string): Promise<string | null> {
   try {
-    // First try to verify as JWT via JWKS
-    const { payload } = await jwtVerify<AuthJWTPayload>(token, jwks, {
-      issuer: env.BETTER_AUTH_URL,
-      audience: "instagram-clone",
+    // Better Auth uses opaque session tokens - look up in database
+    const session = await db.query.sessions.findFirst({
+      where: eq(schema.sessions.token, token),
+      with: { user: true },
     });
-    return payload.sub;
-  } catch (error) {
-    // If JWT verification fails, try to look up session in database
-    // (Better Auth stores session tokens in the sessions table)
-    console.log('[WS] JWT verification failed, trying session lookup:', error);
-    try {
-      const sessionRecord = await db
-        .select({ userId: schema.sessions.userId })
-        .from(schema.sessions)
-        .where(and(
-          eq(schema.sessions.token, token),
-          eq(schema.sessions.expiresAt, new Date()) // Not expired
-        ))
-        .limit(1);
-      if (sessionRecord.length > 0) {
-        return sessionRecord[0].userId;
-      }
-    } catch (dbError) {
-      console.error('[WS] Session lookup failed:', dbError);
+
+    if (!session || session.expiresAt < new Date()) {
+      return null;
     }
+
+    // Update session activity (sliding window)
+    await db
+      .update(schema.sessions)
+      .set({ updatedAt: new Date() })
+      .where(eq(schema.sessions.id, session.id));
+
+    return session.userId;
+  } catch (error) {
+    console.error('[WS] Token verification failed:', error);
     return null;
   }
 }

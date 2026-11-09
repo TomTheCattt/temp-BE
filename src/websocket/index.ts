@@ -5,13 +5,12 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { eq, and } from "drizzle-orm";
 import * as schema from "../db/schema";
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from "jose";
+import { upgradeWebSocket } from "@neon/functions";
 
 // Types for authenticated WebSocket
 interface AuthenticatedSocket extends WebSocket {
   userId: string;
   isAlive: boolean;
-  pendingAuthToken?: string;
 }
 
 // Message types
@@ -50,7 +49,6 @@ const clients = new Map<string, Set<AuthenticatedSocket>>();
 
 // Environment variables (injected by Neon at runtime)
 const DATABASE_URL = process.env.DATABASE_URL!;
-const BETTER_AUTH_URL = process.env.BETTER_AUTH_URL!;
 
 // Create database pool
 const pool = new Pool({
@@ -60,16 +58,7 @@ const pool = new Pool({
 
 export const db = drizzle(pool, { schema });
 
-// JWKS for Better Auth token verification
-const jwksUrl = `${BETTER_AUTH_URL}/.well-known/jwks.json`;
-const jwks = createRemoteJWKSet(new URL(jwksUrl));
-
-interface AuthJWTPayload extends JWTPayload {
-  sub: string;
-  sessionId: string;
-  email: string;
-  username?: string;
-}
+// Session token verification uses database lookup (Better Auth uses opaque tokens by default)
 
 function validateMessage(msg: unknown): WSMessage | null {
   if (typeof msg !== "object" || msg === null) return null;
@@ -78,8 +67,27 @@ function validateMessage(msg: unknown): WSMessage | null {
   return m as unknown as WSMessage;
 }
 
+// Extract token from WebSocket upgrade request
+// Supports: Authorization: Bearer <token>, Sec-WebSocket-Protocol: bearer.<token>, or ?token= query param (legacy)
+function extractToken(request: Request): string | null {
+  // 1. Check Authorization header (Bearer token)
+  const authHeader = request.headers.get("Authorization");
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    return authHeader.slice(7);
+  }
+
+  // 2. Check Sec-WebSocket-Protocol header (standard for WebSocket auth)
+  const protocolHeader = request.headers.get("Sec-WebSocket-Protocol");
+  if (protocolHeader && protocolHeader.startsWith("bearer.")) {
+    return protocolHeader.slice(7); // Remove "bearer." prefix
+  }
+
+  // 3. Fallback to query parameter (legacy, less secure)
+  const url = new URL(request.url);
+  return url.searchParams.get("token");
+}
+
 // Main handler for Neon Functions
-// Neon Functions export a default fetch handler
 export default {
   async fetch(request: Request): Promise<Response> {
     const upgradeHeader = request.headers.get("Upgrade");
@@ -106,102 +114,102 @@ export default {
 };
 
 async function handleWebSocketUpgrade(request: Request): Promise<Response> {
-  // Neon Functions provides WebSocketPair via the runtime
-  // For local development with `neon dev`, this works
-  // @ts-expect-error - WebSocketPair is provided by Neon Functions runtime
-  const pair = new WebSocketPair();
-  const client = pair[0];
-  const server = pair[1];
-
-  server.accept();
-
-  // Parse token from query param
-  const url = new URL(request.url);
-  const token = url.searchParams.get("token");
+  // Extract and verify token BEFORE upgrading
+  const token = extractToken(request);
 
   if (!token) {
-    server.close(4001, "Missing token");
-    // @ts-expect-error - webSocket is supported by Neon Functions Response
-    return new Response(null, { status: 101, webSocket: client });
+    return new Response("Missing token", { status: 401 });
   }
 
-  const socket = server as unknown as AuthenticatedSocket;
-  socket.userId = "";
-  socket.isAlive = true;
-  socket.pendingAuthToken = token;
+  // Verify token during handshake
+  const userId = await verifyBetterAuthToken(token);
+  if (!userId) {
+    return new Response("Invalid token", { status: 401 });
+  }
 
-  // Heartbeat - 30 second interval
+  // Token valid - upgrade to WebSocket
+  const { socket, response } = upgradeWebSocket(request);
+
+  const authSocket = socket as unknown as AuthenticatedSocket;
+  authSocket.userId = userId;
+  authSocket.isAlive = true;
+
+  // Register authenticated socket immediately
+  const sockets = clients.get(authSocket.userId) ?? new Set();
+  const firstConnection = sockets.size === 0;
+  sockets.add(authSocket);
+  clients.set(authSocket.userId, sockets);
+
+  if (firstConnection) {
+    broadcastPresence(authSocket.userId, "user_online");
+  }
+
+  // Heartbeat - 30 second interval with jitter
+  const heartbeatInterval = 30_000 + Math.floor(Math.random() * 10_000) - 5_000; // 25-35s
   const heartbeat = setInterval(() => {
-    if (!socket.isAlive) {
+    if (!authSocket.isAlive) {
       clearInterval(heartbeat);
-      return socket.close(1000, "Heartbeat timeout");
+      return authSocket.close(1000, "Heartbeat timeout");
     }
-    socket.isAlive = false;
+    authSocket.isAlive = false;
     try {
-      // @ts-expect-error - ping is available on WebSocket in Neon Functions
-      socket.ping();
+      authSocket.ping();
     } catch {
       // Socket might be closed
     }
-  }, 30_000);
+  }, heartbeatInterval);
 
-  socket.addEventListener("message", async (event) => {
+  authSocket.addEventListener("message", async (event) => {
     try {
+      // Enforce message size limit (16KB)
+      const data = event.data;
+      if (data && typeof data === "string" && data.length > 16_384) {
+        authSocket.send(JSON.stringify({ type: "error", message: "Message too large (max 16KB)" }));
+        return;
+      }
+      if (data && data instanceof ArrayBuffer && data.byteLength > 16_384) {
+        authSocket.send(JSON.stringify({ type: "error", message: "Message too large (max 16KB)" }));
+        return;
+      }
+      if (data && data instanceof Blob && data.size > 16_384) {
+        authSocket.send(JSON.stringify({ type: "error", message: "Message too large (max 16KB)" }));
+        return;
+      }
+
       let message: WSMessage;
       try {
-        const parsed = JSON.parse(event.data as string);
+        const parsed = JSON.parse(data as string);
         const validated = validateMessage(parsed);
         if (!validated) {
-          socket.send(JSON.stringify({ type: "error", message: "Invalid message format" }));
+          authSocket.send(JSON.stringify({ type: "error", message: "Invalid message format" }));
           return;
         }
         message = validated;
       } catch {
-        socket.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
+        authSocket.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
         return;
       }
 
-      // Handle auth on first message
-      if (!socket.userId && socket.pendingAuthToken) {
-        const userId = await verifyBetterAuthToken(socket.pendingAuthToken);
-        if (!userId) {
-          socket.close(4001, "Invalid token");
-          return;
-        }
-
-        socket.userId = userId;
-        delete socket.pendingAuthToken;
-
-        const sockets = clients.get(socket.userId) ?? new Set();
-        const firstConnection = sockets.size === 0;
-        sockets.add(socket);
-        clients.set(socket.userId, sockets);
-
-        if (firstConnection) {
-          broadcastPresence(socket.userId, "user_online");
-        }
-      }
-
-      // Route message
-      await routeMessage(socket, message);
+      // Route message (user already authenticated)
+      await routeMessage(authSocket, message);
     } catch (error) {
       console.error("WebSocket message error:", error);
-      socket.send(JSON.stringify({ type: "error", message: "Internal error" }));
+      authSocket.send(JSON.stringify({ type: "error", message: "Internal error" }));
     }
   });
 
-  socket.addEventListener("close", () => {
+  authSocket.addEventListener("close", () => {
     clearInterval(heartbeat);
-    if (socket.userId) {
-      const sockets = clients.get(socket.userId);
+    if (authSocket.userId) {
+      const sockets = clients.get(authSocket.userId);
       if (sockets) {
-        sockets.delete(socket);
+        sockets.delete(authSocket);
         if (sockets.size === 0) {
-          clients.delete(socket.userId);
+          clients.delete(authSocket.userId);
           // Debounce offline broadcast (30s grace period for multi-device)
           setTimeout(() => {
-            if ((clients.get(socket.userId)?.size ?? 0) === 0) {
-              broadcastPresence(socket.userId, "user_offline");
+            if ((clients.get(authSocket.userId)?.size ?? 0) === 0) {
+              broadcastPresence(authSocket.userId, "user_offline");
             }
           }, 30_000);
         }
@@ -209,21 +217,36 @@ async function handleWebSocketUpgrade(request: Request): Promise<Response> {
     }
   });
 
-  socket.addEventListener("error", (error) => {
+  authSocket.addEventListener("error", (error) => {
     console.error("WebSocket error:", error);
   });
 
-  // @ts-expect-error - webSocket is supported by Neon Functions Response
-  return new Response(null, { status: 101, webSocket: client });
+  authSocket.addEventListener("pong", () => {
+    authSocket.isAlive = true;
+  });
+
+  return response;
 }
 
 async function verifyBetterAuthToken(token: string): Promise<string | null> {
   try {
-    const { payload } = await jwtVerify<AuthJWTPayload>(token, jwks, {
-      issuer: BETTER_AUTH_URL,
-      audience: "instagram-clone",
+    // Better Auth uses opaque session tokens - look up in database
+    const session = await db.query.sessions.findFirst({
+      where: eq(schema.sessions.token, token),
+      with: { user: true },
     });
-    return payload.sub;
+
+    if (!session || session.expiresAt < new Date()) {
+      return null;
+    }
+
+    // Update session activity (sliding window)
+    await db
+      .update(schema.sessions)
+      .set({ updatedAt: new Date() })
+      .where(eq(schema.sessions.id, session.id));
+
+    return session.userId;
   } catch (error) {
     console.error("Token verification failed:", error);
     return null;
