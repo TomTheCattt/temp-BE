@@ -26,6 +26,7 @@ import { storyRouter } from "./routes/story.routes";
 import { conversationRouter } from "./routes/conversation.routes";
 import { notificationRouter } from "./routes/notification.routes";
 import { uploadRouter } from "./routes/upload.routes";
+import { reportRouter } from "./routes/report.routes";
 
 // Use validated env
 import { env } from "./config/env";
@@ -224,6 +225,7 @@ app.route("/v1/stories", storyRouter);
 app.route("/v1/conversations", conversationRouter);
 app.route("/v1/notifications", notificationRouter);
 app.route("/v1/upload", uploadRouter);
+app.route("/v1/reports", reportRouter);
 
 // Error handler
 app.onError((err, c) => {

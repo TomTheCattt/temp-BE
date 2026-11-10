@@ -445,4 +445,31 @@ reelRouter.post("/:reelId/comments", zValidator("json", z.object({ text: z.strin
   );
 });
 
+// DELETE /v1/reels/:reelId/comments/:commentId - Delete reel comment
+reelRouter.delete("/:reelId/comments/:commentId", async (c) => {
+  const user = getCurrentUser(c);
+  const reelId = c.req.param("reelId");
+  const commentId = c.req.param("commentId");
+
+  const comment = await db.query.comments.findFirst({
+    where: and(eq(schema.comments.id, commentId), eq(schema.comments.reelId, reelId)),
+  });
+  if (!comment) throw new HTTPException(404, { message: "Comment not found" });
+
+  // Only comment author or reel author can delete
+  if (comment.authorId !== user.id) {
+    const reel = await db.query.reels.findFirst({ where: eq(schema.reels.id, reelId), columns: { authorId: true } });
+    if (!reel || reel.authorId !== user.id) {
+      throw new HTTPException(403, { message: "Not authorized to delete this comment" });
+    }
+  }
+
+  await db.delete(schema.comments).where(eq(schema.comments.id, commentId));
+
+  // Decrement comments count on reel
+  await db.update(schema.reels).set({ commentsCount: sql`${schema.reels.commentsCount} - 1` }).where(eq(schema.reels.id, reelId));
+
+  return c.status(204);
+});
+
 export { reelRouter };

@@ -142,6 +142,7 @@ curl -X POST http://localhost:8787/v1/auth/login \
 | DELETE | `/v1/posts/:id/save` | ✅ | — | `204` |
 | GET | `/v1/posts/:id/comments` | ✅ | `page?, perPage?` | Paginated comments |
 | POST | `/v1/posts/:id/comments` | ✅ | `{ text, parentId? }` | `{ comment: Comment }` |
+| DELETE | `/v1/posts/:id/comments/:commentId` | ✅ | — | `204` |
 
 > **MediaInput:** `{ url, type: "IMAGE" \| "VIDEO", width?, height?, duration?, pendingUploadId? }`
 
@@ -164,6 +165,7 @@ curl -X POST http://localhost:8787/v1/auth/login \
 | POST | `/v1/reels/:id/view` | ✅ | — | `204` |
 | GET | `/v1/reels/:reelId/comments` | ✅ | `page?, perPage?` | Paginated comments |
 | POST | `/v1/reels/:reelId/comments` | ✅ | `{ text, parentId? }` | `{ comment: Comment }` |
+| DELETE | `/v1/reels/:reelId/comments/:commentId` | ✅ | — | `204` |
 
 > **Reel includes:** `isLiked`, `isSaved`, `author.isFollowing` (computed)
 
@@ -180,6 +182,7 @@ curl -X POST http://localhost:8787/v1/auth/login \
 | DELETE | `/v1/stories/:storyId` | ✅ | — | `204` |
 | GET | `/v1/stories/:id/comments` | ✅ | `page?, perPage?` | Paginated comments |
 | POST | `/v1/stories/:id/comments` | ✅ | `{ text, parentId? }` | `{ comment: Comment }` |
+| DELETE | `/v1/stories/:id/comments/:commentId` | ✅ | — | `204` |
 
 > **Stories Feed (`/feed`):** Returns active stories from **self + following** (friend's stories), grouped by author with view status.
 
@@ -209,6 +212,23 @@ curl -X POST http://localhost:8787/v1/auth/login \
 | POST | `/v1/notifications/:id/read` | ✅ | — | `204` |
 
 > **Notification includes:** `postThumbnailUrl` for LIKE/COMMENT/TAGGED_IN_POST
+
+---
+
+## Reports (`/v1/reports`)
+
+| Method | Endpoint | Auth | Request Body | Response |
+|--------|----------|------|--------------|----------|
+| POST | `/v1/reports/` | ✅ | `{ type, reason, description?, postId? \| commentId? \| reelId? \| storyId? \| userId? \| messageId? }` | `{ report: Report }` |
+| GET | `/v1/reports/my` | ✅ | `page?, perPage?, status?, type?` | Paginated user's reports |
+| GET | `/v1/reports/:id` | ✅ | — | `{ report: Report }` |
+| GET | `/v1/reports/` | ✅ (admin) | `page?, perPage?, status?, type?` | Paginated all reports |
+| PUT | `/v1/reports/:id` | ✅ (admin) | `{ status, resolution? }` | `{ report: Report }` |
+
+> **Report Types:** `POST`, `COMMENT`, `REEL`, `STORY`, `USER`, `MESSAGE`
+> **Report Reasons:** `SPAM`, `INAPPROPRIATE_CONTENT`, `HARASSMENT`, `HATE_SPEECH`, `VIOLENCE`, `SEXUAL_CONTENT`, `SELF_HARM`, `FAKE_ACCOUNT`, `INTELLECTUAL_PROPERTY`, `OTHER`
+> **Report Status:** `PENDING`, `REVIEWED`, `RESOLVED`, `DISMISSED`
+> **Note:** Exactly one target ID must be provided matching the report type. Admin endpoints require moderator role (to be implemented).
 
 ---
 
@@ -449,6 +469,28 @@ interface StoryItem {
   stickerType?: string;
   stickerData?: string;
 }
+
+// Report
+interface Report {
+  id: string;
+  reporterId: string;
+  type: "POST" | "COMMENT" | "REEL" | "STORY" | "USER" | "MESSAGE";
+  reason: "SPAM" | "INAPPROPRIATE_CONTENT" | "HARASSMENT" | "HATE_SPEECH" | "VIOLENCE" | "SEXUAL_CONTENT" | "SELF_HARM" | "FAKE_ACCOUNT" | "INTELLECTUAL_PROPERTY" | "OTHER";
+  description?: string;
+  postId?: string;
+  commentId?: string;
+  reelId?: string;
+  storyId?: string;
+  userId?: string;
+  messageId?: string;
+  status: "PENDING" | "REVIEWED" | "RESOLVED" | "DISMISSED";
+  reviewedBy?: string;
+  reviewedAt?: string;
+  resolution?: string;
+  createdAt: string;
+  updatedAt: string;
+  reporter?: User;
+}
 ```
 
 ---
@@ -469,6 +511,8 @@ interface StoryItem {
 | `ALREADY_BLOCKED` | 409 | Already blocked user |
 | `SELF_FOLLOW` | 400 | Cannot follow yourself |
 | `SELF_BLOCK` | 400 | Cannot block yourself |
+| `SELF_REPORT` | 400 | Cannot report yourself |
+| `ALREADY_REPORTED` | 409 | You have already reported this content |
 | `INVALID_CREDENTIALS` | 401 | Wrong email/password |
 | `REGISTRATION_FAILED` | 500 | Account creation failed |
 | `INTERNAL_ERROR` | 500 | Server error |

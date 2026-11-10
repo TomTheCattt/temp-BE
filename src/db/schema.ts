@@ -47,6 +47,33 @@ export const notificationTypeEnum = pgEnum("notification_type", [
   "LIVE_VIDEO",
 ]);
 
+export const reportTypeEnum = pgEnum("report_type", [
+  "POST",
+  "COMMENT",
+  "REEL",
+  "STORY",
+  "USER",
+  "MESSAGE",
+]);
+export const reportStatusEnum = pgEnum("report_status", [
+  "PENDING",
+  "REVIEWED",
+  "RESOLVED",
+  "DISMISSED",
+]);
+export const reportReasonEnum = pgEnum("report_reason", [
+  "SPAM",
+  "INAPPROPRIATE_CONTENT",
+  "HARASSMENT",
+  "HATE_SPEECH",
+  "VIOLENCE",
+  "SEXUAL_CONTENT",
+  "SELF_HARM",
+  "FAKE_ACCOUNT",
+  "INTELLECTUAL_PROPERTY",
+  "OTHER",
+]);
+
 // Users table
 export const users = pgTable(
   "users",
@@ -424,6 +451,7 @@ export const notifications = pgTable(
     type: notificationTypeEnum("type").notNull(),
     postId: uuid("post_id").references(() => posts.id, { onDelete: "cascade" }),
     reelId: uuid("reel_id").references(() => reels.id, { onDelete: "cascade" }),
+    storyId: uuid("story_id").references(() => stories.id, { onDelete: "cascade" }),
     commentText: text("comment_text"),
     postThumbnailUrl: varchar("post_thumbnail_url", { length: 500 }),
     isRead: boolean("is_read").default(false).notNull(),
@@ -432,6 +460,45 @@ export const notifications = pgTable(
   (table) => ({
     recipientIdx: index("notifications_recipient_id_created_at_idx").on(table.recipientId, table.createdAt),
     recipientReadIdx: index("notifications_recipient_id_is_read_idx").on(table.recipientId, table.isRead),
+  })
+);
+
+// Reports
+export const reports = pgTable(
+  "reports",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    reporterId: uuid("reporter_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: reportTypeEnum("type").notNull(),
+    reason: reportReasonEnum("reason").notNull(),
+    description: text("description"),
+    // Target entity IDs (only one will be set based on type)
+    postId: uuid("post_id").references(() => posts.id, { onDelete: "cascade" }),
+    commentId: uuid("comment_id").references(() => comments.id, { onDelete: "cascade" }),
+    reelId: uuid("reel_id").references(() => reels.id, { onDelete: "cascade" }),
+    storyId: uuid("story_id").references(() => stories.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+    messageId: uuid("message_id").references(() => messages.id, { onDelete: "cascade" }),
+    status: reportStatusEnum("status").default("PENDING").notNull(),
+    reviewedBy: uuid("reviewed_by").references(() => users.id, { onDelete: "set null" }),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    resolution: text("resolution"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    reporterIdx: index("reports_reporter_id_created_at_idx").on(table.reporterId, table.createdAt),
+    postIdx: index("reports_post_id_idx").on(table.postId),
+    commentIdx: index("reports_comment_id_idx").on(table.commentId),
+    reelIdx: index("reports_reel_id_idx").on(table.reelId),
+    storyIdx: index("reports_story_id_idx").on(table.storyId),
+    userIdx: index("reports_user_id_idx").on(table.userId),
+    messageIdx: index("reports_message_id_idx").on(table.messageId),
+    statusIdx: index("reports_status_created_at_idx").on(table.status, table.createdAt),
+    // Prevent duplicate reports from same user on same target
+    uniqueReport: uniqueIndex("reports_unique").on(table.reporterId, table.postId, table.commentId, table.reelId, table.storyId, table.userId, table.messageId),
   })
 );
 

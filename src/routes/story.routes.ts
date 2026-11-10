@@ -351,4 +351,31 @@ storyRouter.post("/:id/comments", zValidator("json", z.object({ text: z.string()
   return c.json({ success: true, data: { comment: createdComment } }, 201);
 });
 
+// DELETE /v1/stories/:id/comments/:commentId - Delete story comment
+storyRouter.delete("/:id/comments/:commentId", async (c) => {
+  const user = getCurrentUser(c);
+  const storyId = c.req.param("id");
+  const commentId = c.req.param("commentId");
+
+  const comment = await db.query.comments.findFirst({
+    where: and(eq(schema.comments.id, commentId), eq(schema.comments.storyId, storyId)),
+  });
+  if (!comment) throw new HTTPException(404, { message: "Comment not found" });
+
+  // Only comment author or story author can delete
+  if (comment.authorId !== user.id) {
+    const story = await db.query.stories.findFirst({ where: eq(schema.stories.id, storyId), columns: { authorId: true } });
+    if (!story || story.authorId !== user.id) {
+      throw new HTTPException(403, { message: "Not authorized to delete this comment" });
+    }
+  }
+
+  await db.delete(schema.comments).where(eq(schema.comments.id, commentId));
+
+  // Story comments don't have a commentsCount field on stories table
+  // (stories expire after 24h, so comment count isn't tracked the same way)
+
+  return c.status(204);
+});
+
 export { storyRouter };

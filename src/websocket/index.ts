@@ -11,6 +11,7 @@ import { upgradeWebSocket } from "@neon/functions";
 interface AuthenticatedSocket extends WebSocket {
   userId: string;
   isAlive: boolean;
+  ping?: () => void;
 }
 
 // Message types
@@ -153,7 +154,7 @@ async function handleWebSocketUpgrade(request: Request): Promise<Response> {
     }
     authSocket.isAlive = false;
     try {
-      authSocket.ping();
+      authSocket.ping?.();
     } catch {
       // Socket might be closed
     }

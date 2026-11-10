@@ -583,4 +583,31 @@ postRouter.post("/:id/comments", zValidator("json", z.object({ text: z.string().
   return c.json({ success: true, data: { comment: createdComment } }, 201);
 });
 
+// DELETE /v1/posts/:id/comments/:commentId - Delete post comment
+postRouter.delete("/:id/comments/:commentId", async (c) => {
+  const user = getCurrentUser(c);
+  const postId = c.req.param("id");
+  const commentId = c.req.param("commentId");
+
+  const comment = await db.query.comments.findFirst({
+    where: and(eq(schema.comments.id, commentId), eq(schema.comments.postId, postId)),
+  });
+  if (!comment) throw new HTTPException(404, { message: "Comment not found" });
+
+  // Only comment author or post author can delete
+  if (comment.authorId !== user.id) {
+    const post = await db.query.posts.findFirst({ where: eq(schema.posts.id, postId), columns: { authorId: true } });
+    if (!post || post.authorId !== user.id) {
+      throw new HTTPException(403, { message: "Not authorized to delete this comment" });
+    }
+  }
+
+  await db.delete(schema.comments).where(eq(schema.comments.id, commentId));
+
+  // Decrement comments count on post
+  await db.update(schema.posts).set({ commentsCount: sql`${schema.posts.commentsCount} - 1` }).where(eq(schema.posts.id, postId));
+
+  return c.status(204);
+});
+
 export { postRouter };
