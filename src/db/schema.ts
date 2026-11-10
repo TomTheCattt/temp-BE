@@ -138,6 +138,7 @@ export const follows = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     uniqueFollow: uniqueIndex("follows_unique").on(table.followerId, table.followingId),
@@ -158,6 +159,7 @@ export const blocks = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     uniqueBlock: uniqueIndex("blocks_unique").on(table.blockerId, table.blockedId),
@@ -203,6 +205,8 @@ export const mediaItems = pgTable(
     height: integer("height"),
     duration: decimal("duration", { precision: 8, scale: 3 }),
     sortOrder: integer("sort_order").default(0).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     postIdIdx: index("media_items_post_id_idx").on(table.postId),
@@ -221,11 +225,13 @@ export const likes = pgTable(
     reelId: uuid("reel_id").references(() => reels.id, { onDelete: "cascade" }),
     commentId: uuid("comment_id").references(() => comments.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     uniquePostLike: uniqueIndex("likes_unique_post").on(table.userId, table.postId),
     uniqueReelLike: uniqueIndex("likes_unique_reel").on(table.userId, table.reelId),
     uniqueCommentLike: uniqueIndex("likes_unique_comment").on(table.userId, table.commentId),
+    commentIdx: index("likes_comment_id_idx").on(table.commentId),
   })
 );
 
@@ -241,6 +247,7 @@ export const savedPosts = pgTable(
       .notNull()
       .references(() => posts.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     uniqueSave: uniqueIndex("saved_posts_unique").on(table.userId, table.postId),
@@ -262,6 +269,7 @@ export const comments = pgTable(
     parentId: uuid("parent_id").references((): AnyPgColumn => comments.id, { onDelete: "cascade" }),
     likesCount: integer("likes_count").default(0).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     postIdx: index("comments_post_id_created_at_idx").on(table.postId, table.createdAt),
@@ -280,6 +288,7 @@ export const stories = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
   (table) => ({
@@ -321,6 +330,8 @@ export const storyViews = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     viewedAt: timestamp("viewed_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     uniqueView: uniqueIndex("story_views_unique").on(table.storyId, table.viewerId),
@@ -348,6 +359,7 @@ export const reels = pgTable(
     sharesCount: integer("shares_count").default(0).notNull(),
     viewsCount: integer("views_count").default(0).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     authorIdx: index("reels_author_id_idx").on(table.authorId),
@@ -367,6 +379,7 @@ export const savedReels = pgTable(
       .notNull()
       .references(() => reels.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     uniqueSave: uniqueIndex("saved_reels_unique").on(table.userId, table.reelId),
@@ -403,6 +416,8 @@ export const conversationMembers = pgTable(
     isMuted: boolean("is_muted").default(false).notNull(),
     lastReadAt: timestamp("last_read_at", { withTimezone: true }),
     joinedAt: timestamp("joined_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     uniqueMember: uniqueIndex("conversation_members_unique").on(table.conversationId, table.userId),
@@ -430,10 +445,12 @@ export const messages = pgTable(
     replyToId: uuid("reply_to_id").references((): AnyPgColumn => messages.id, { onDelete: "set null" }),
     status: messageStatusEnum("status").default("SENT").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     convCreatedIdx: index("messages_conversation_id_created_at_idx").on(table.conversationId, table.createdAt),
     senderIdx: index("messages_sender_id_idx").on(table.senderId),
+    referenceIdx: index("messages_reference_id_idx").on(table.referenceId),
   })
 );
 
@@ -456,6 +473,7 @@ export const notifications = pgTable(
     postThumbnailUrl: varchar("post_thumbnail_url", { length: 500 }),
     isRead: boolean("is_read").default(false).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     recipientIdx: index("notifications_recipient_id_created_at_idx").on(table.recipientId, table.createdAt),
@@ -531,6 +549,7 @@ export const closeFriends = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     uniqueFriend: uniqueIndex("close_friends_unique").on(table.userId, table.friendId),
@@ -551,6 +570,7 @@ export const pendingUploads = pgTable(
     url: varchar("url", { length: 500 }).notNull(),
     confirmed: boolean("confirmed").default(false).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => ({
     confirmedIdx: index("pending_uploads_confirmed_created_at_idx").on(table.confirmed, table.createdAt),
@@ -725,6 +745,80 @@ export const notificationsRelations = relations(notifications, ({ one }) => ({
   actor: one(users, { fields: [notifications.actorId], references: [users.id], relationName: "actor" }),
   post: one(posts, { fields: [notifications.postId], references: [posts.id] }),
   reel: one(reels, { fields: [notifications.reelId], references: [reels.id] }),
+  story: one(stories, { fields: [notifications.storyId], references: [stories.id] }),
+}));
+
+export const reportsRelations = relations(reports, ({ one }) => ({
+  reporter: one(users, { fields: [reports.reporterId], references: [users.id], relationName: "reporter" }),
+  reviewedByUser: one(users, { fields: [reports.reviewedBy], references: [users.id], relationName: "reviewedBy" }),
+  post: one(posts, { fields: [reports.postId], references: [posts.id] }),
+  comment: one(comments, { fields: [reports.commentId], references: [comments.id] }),
+  reel: one(reels, { fields: [reports.reelId], references: [reels.id] }),
+  story: one(stories, { fields: [reports.storyId], references: [stories.id] }),
+  user: one(users, { fields: [reports.userId], references: [users.id], relationName: "reportedUser" }),
+  message: one(messages, { fields: [reports.messageId], references: [messages.id] }),
+}));
+
+export const storyViewsRelations = relations(storyViews, ({ one }) => ({
+  story: one(stories, { fields: [storyViews.storyId], references: [stories.id] }),
+  viewer: one(users, { fields: [storyViews.viewerId], references: [users.id] }),
+}));
+
+export const mediaItemsRelations = relations(mediaItems, ({ one }) => ({
+  post: one(posts, { fields: [mediaItems.postId], references: [posts.id] }),
+}));
+
+export const likesRelations = relations(likes, ({ one }) => ({
+  user: one(users, { fields: [likes.userId], references: [users.id] }),
+  post: one(posts, { fields: [likes.postId], references: [posts.id] }),
+  reel: one(reels, { fields: [likes.reelId], references: [reels.id] }),
+  comment: one(comments, { fields: [likes.commentId], references: [comments.id] }),
+}));
+
+export const savedPostsRelations = relations(savedPosts, ({ one }) => ({
+  user: one(users, { fields: [savedPosts.userId], references: [users.id] }),
+  post: one(posts, { fields: [savedPosts.postId], references: [posts.id] }),
+}));
+
+export const savedReelsRelations = relations(savedReels, ({ one }) => ({
+  user: one(users, { fields: [savedReels.userId], references: [users.id] }),
+  reel: one(reels, { fields: [savedReels.reelId], references: [reels.id] }),
+}));
+
+export const followsRelations = relations(follows, ({ one }) => ({
+  follower: one(users, { fields: [follows.followerId], references: [users.id], relationName: "follower" }),
+  following: one(users, { fields: [follows.followingId], references: [users.id], relationName: "following" }),
+}));
+
+export const blocksRelations = relations(blocks, ({ one }) => ({
+  blocker: one(users, { fields: [blocks.blockerId], references: [users.id], relationName: "blocker" }),
+  blocked: one(users, { fields: [blocks.blockedId], references: [users.id], relationName: "blocked" }),
+}));
+
+export const closeFriendsRelations = relations(closeFriends, ({ one }) => ({
+  user: one(users, { fields: [closeFriends.userId], references: [users.id], relationName: "user" }),
+  friend: one(users, { fields: [closeFriends.friendId], references: [users.id], relationName: "friend" }),
+}));
+
+export const pendingUploadsRelations = relations(pendingUploads, ({ one }) => ({
+  user: one(users, { fields: [pendingUploads.userId], references: [users.id] }),
+}));
+
+export const commentsRelations = relations(comments, ({ one, many }) => ({
+  author: one(users, { fields: [comments.authorId], references: [users.id] }),
+  post: one(posts, { fields: [comments.postId], references: [posts.id] }),
+  reel: one(reels, { fields: [comments.reelId], references: [reels.id] }),
+  story: one(stories, { fields: [comments.storyId], references: [stories.id] }),
+  parent: one(comments, { fields: [comments.parentId], references: [comments.id], relationName: "parent" }),
+  replies: many(comments, { relationName: "parent" }),
+  likes: many(likes),
+}));
+
+export const storiesRelations = relations(stories, ({ one, many }) => ({
+  author: one(users, { fields: [stories.authorId], references: [users.id] }),
+  items: many(storyItems),
+  views: many(storyViews),
+  comments: many(comments),
 }));
 
 // Export all tables for easy importing
@@ -747,6 +841,7 @@ export const schema = {
   conversationMembers,
   messages,
   notifications,
+  reports,
   userSettings,
   closeFriends,
   pendingUploads,
@@ -770,3 +865,20 @@ export type Notification = typeof notifications.$inferSelect;
 export type UserSettings = typeof userSettings.$inferSelect;
 export type RefreshToken = typeof refreshTokens.$inferSelect;
 export type NewRefreshToken = typeof refreshTokens.$inferInsert;
+export type Comment = typeof comments.$inferSelect;
+export type NewComment = typeof comments.$inferInsert;
+export type Story = typeof stories.$inferSelect;
+export type NewStory = typeof stories.$inferInsert;
+export type Report = typeof reports.$inferSelect;
+export type NewReport = typeof reports.$inferInsert;
+export type StoryItem = typeof storyItems.$inferSelect;
+export type StoryView = typeof storyViews.$inferSelect;
+export type SavedPost = typeof savedPosts.$inferSelect;
+export type SavedReel = typeof savedReels.$inferSelect;
+export type ConversationMember = typeof conversationMembers.$inferSelect;
+export type Like = typeof likes.$inferSelect;
+export type DeviceToken = typeof deviceTokens.$inferSelect;
+export type Follow = typeof follows.$inferSelect;
+export type Block = typeof blocks.$inferSelect;
+export type CloseFriend = typeof closeFriends.$inferSelect;
+export type PendingUpload = typeof pendingUploads.$inferSelect;
