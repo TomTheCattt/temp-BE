@@ -15,16 +15,16 @@ Standard Better Auth endpoints are also available at `/api/auth/*` (see below).
 
 | Method | Endpoint | Auth | Request Body | Response |
 |--------|----------|------|--------------|----------|
-| POST | `/register` | ❌ | `{ email, password, username, fullName, phone? }` | `{ user: User, accessToken: string, refreshToken: string, expiresAt: number }` |
-| POST | `/login` | ❌ | `{ email, password }` | `{ user: User, accessToken: string, refreshToken: string, expiresAt: number }` |
-| POST | `/logout` | ✅ | — | `{ message: string }` |
-| POST | `/logout-all-devices` | ✅ | — | `{ message: string }` |
-| POST | `/change-password` | ✅ | `{ currentPassword, newPassword }` | `{ message: string }` |
-| POST | `/forgot-password` | ❌ | `{ email }` | `{ message: string }` |
-| POST | `/verify-email` | ❌ | `{ token }` | `{ message: string }` |
-| POST | `/resend-verification` | ❌ | `{ email }` | `{ message: string }` |
-| GET | `/me` | ✅ | — | `{ user: User }` |
-| POST | `/refresh` | ❌ | `Authorization: Bearer <refreshToken>` | `{ accessToken: string, refreshToken: string, expiresAt: number }` |
+| POST | `/v1/auth/register` | ❌ | `{ email, password, username, fullName, phone? }` | `{ user: User, accessToken: string, refreshToken: string, expiresAt: number }` |
+| POST | `/v1/auth/login` | ❌ | `{ email, password }` | `{ user: User, accessToken: string, refreshToken: string, expiresAt: number }` |
+| POST | `/v1/auth/logout` | ✅ | — | `{ message: string }` |
+| POST | `/v1/auth/logout-all-devices` | ✅ | — | `{ message: string }` |
+| POST | `/v1/auth/change-password` | ✅ | `{ currentPassword, newPassword }` | `{ message: string }` |
+| POST | `/v1/auth/forgot-password` | ❌ | `{ email }` | `{ message: string }` |
+| POST | `/v1/auth/verify-email` | ❌ | `{ token }` | `{ message: string }` |
+| POST | `/v1/auth/resend-verification` | ❌ | `{ email }` | `{ message: string }` |
+| GET | `/v1/auth/me` | ✅ | — | `{ user: User }` |
+| POST | `/v1/auth/refresh` | ❌ | `Authorization: Bearer <refreshToken>` | `{ accessToken: string, refreshToken: string, expiresAt: number }` |
 
 ### Better Auth Standard Endpoints (`/api/auth/*`)
 
@@ -128,20 +128,20 @@ curl -X POST http://localhost:8787/v1/auth/login \
 
 | Method | Endpoint | Auth | Request Body | Response |
 |--------|----------|------|--------------|----------|
-| GET | `/feed` | ✅ | `cursor?, perPage?` | Cursor paginated posts |
-| GET | `/explore` | ✅ | `cursor?, perPage?` | Cursor paginated posts |
-| GET | `/saved` | ✅ | `cursor?, perPage?` | Cursor paginated posts |
-| GET | `/user/:userId` | ✅ | `page?, perPage?` | Offset paginated posts |
-| GET | `/:id` | ✅ | — | `{ post: Post }` |
-| POST | `/` | ✅ | `{ caption?, locationName?, locationLat?, locationLng?, media: MediaInput[] }` | `{ post: Post }` |
-| PUT | `/:id` | ✅ | `{ caption?, locationName?, locationLat?, locationLng? }` | `{ post: Post }` |
-| DELETE | `/:id` | ✅ | — | `204` |
-| POST | `/:id/like` | ✅ | — | `204` |
-| DELETE | `/:id/like` | ✅ | — | `204` |
-| POST | `/:id/save` | ✅ | — | `204` |
-| DELETE | `/:id/save` | ✅ | — | `204` |
-| **GET** | `/:id/comments` | ✅ | `page?, perPage?` | **Paginated comments** |
-| **POST** | `/:id/comments` | ✅ | `{ text, parentId? }` | **`{ comment: Comment }`** |
+| GET | `/v1/posts/feed` | ✅ | `cursor?, perPage?` | Cursor paginated posts |
+| GET | `/v1/posts/explore` | ✅ | `cursor?, perPage?` | Cursor paginated posts |
+| GET | `/v1/posts/saved` | ✅ | `cursor?, perPage?` | Cursor paginated posts |
+| GET | `/v1/posts/user/:userId` | ✅ | `page?, perPage?` | Offset paginated posts |
+| GET | `/v1/posts/:id` | ✅ | — | `{ post: Post }` |
+| POST | `/v1/posts/` | ✅ | `{ caption?, locationName?, locationLat?, locationLng?, media: MediaInput[] }` | `{ post: Post }` |
+| PUT | `/v1/posts/:id` | ✅ | `{ caption?, locationName?, locationLat?, locationLng? }` | `{ post: Post }` |
+| DELETE | `/v1/posts/:id` | ✅ | — | `204` |
+| POST | `/v1/posts/:id/like` | ✅ | — | `204` |
+| DELETE | `/v1/posts/:id/like` | ✅ | — | `204` |
+| POST | `/v1/posts/:id/save` | ✅ | — | `204` |
+| DELETE | `/v1/posts/:id/save` | ✅ | — | `204` |
+| GET | `/v1/posts/:id/comments` | ✅ | `page?, perPage?` | Paginated comments |
+| POST | `/v1/posts/:id/comments` | ✅ | `{ text, parentId? }` | `{ comment: Comment }` |
 
 > **MediaInput:** `{ url, type: "IMAGE" \| "VIDEO", width?, height?, duration?, pendingUploadId? }`
 
@@ -153,17 +153,17 @@ curl -X POST http://localhost:8787/v1/auth/login \
 
 | Method | Endpoint | Auth | Request Body | Response |
 |--------|----------|------|--------------|----------|
-| GET | `/feed` | ✅ | `cursor?, perPage?` | Cursor paginated reels |
-| GET | `/user/:userId` | ✅ | `page?, perPage?` | Offset paginated reels |
-| POST | `/` | ✅ | `{ videoUrl, thumbnailUrl?, caption?, duration, audioName?, audioArtist?, audioCoverUrl?, isOriginalAudio? }` | `{ reel: Reel }` |
-| POST | `/:id/like` | ✅ | — | `204` |
-| DELETE | `/:id/like` | ✅ | — | `204` |
-| POST | `/:id/save` | ✅ | — | `204` |
-| DELETE | `/:id/save` | ✅ | — | `204` |
-| DELETE | `/:id` | ✅ | — | `204` (author only) |
-| POST | `/:id/view` | ✅ | — | `204` |
-| GET | `/:reelId/comments` | ✅ | `page?, perPage?` | Paginated comments |
-| POST | `/:reelId/comments` | ✅ | `{ text, parentId? }` | `{ comment: Comment }` |
+| GET | `/v1/reels/feed` | ✅ | `cursor?, perPage?` | Cursor paginated reels |
+| GET | `/v1/reels/user/:userId` | ✅ | `page?, perPage?` | Offset paginated reels |
+| POST | `/v1/reels/` | ✅ | `{ videoUrl, thumbnailUrl?, caption?, duration, audioName?, audioArtist?, audioCoverUrl?, isOriginalAudio? }` | `{ reel: Reel }` |
+| POST | `/v1/reels/:id/like` | ✅ | — | `204` |
+| DELETE | `/v1/reels/:id/like` | ✅ | — | `204` |
+| POST | `/v1/reels/:id/save` | ✅ | — | `204` |
+| DELETE | `/v1/reels/:id/save` | ✅ | — | `204` |
+| DELETE | `/v1/reels/:id` | ✅ | — | `204` (author only) |
+| POST | `/v1/reels/:id/view` | ✅ | — | `204` |
+| GET | `/v1/reels/:reelId/comments` | ✅ | `page?, perPage?` | Paginated comments |
+| POST | `/v1/reels/:reelId/comments` | ✅ | `{ text, parentId? }` | `{ comment: Comment }` |
 
 > **Reel includes:** `isLiked`, `isSaved`, `author.isFollowing` (computed)
 
@@ -173,13 +173,13 @@ curl -X POST http://localhost:8787/v1/auth/login \
 
 | Method | Endpoint | Auth | Request Body | Response |
 |--------|----------|------|--------------|----------|
-| GET | `/feed` | ✅ | — | `{ items: StoryGroup[] }` |
-| GET | `/:userId/items` | ✅ | — | `{ stories: StoryItem[] }` |
-| POST | `/` | ✅ | `{ mediaUrl, type, duration?, stickerType?, stickerData? }` | `{ story: Story }` |
-| POST | `/:storyId/view` | ✅ | — | `204` |
-| DELETE | `/:storyId` | ✅ | — | `204` |
-| **GET** | `/:storyId/comments` | ✅ | `page?, perPage?` | **Paginated comments** |
-| **POST** | `/:storyId/comments` | ✅ | `{ text, parentId? }` | **`{ comment: Comment }`** |
+| GET | `/v1/stories/feed` | ✅ | — | `{ items: StoryGroup[] }` |
+| GET | `/v1/stories/:userId/items` | ✅ | — | `{ stories: StoryItem[] }` |
+| POST | `/v1/stories/` | ✅ | `{ mediaUrl, type, duration?, stickerType?, stickerData? }` | `{ story: Story }` |
+| POST | `/v1/stories/:storyId/view` | ✅ | — | `204` |
+| DELETE | `/v1/stories/:storyId` | ✅ | — | `204` |
+| GET | `/v1/stories/:id/comments` | ✅ | `page?, perPage?` | Paginated comments |
+| POST | `/v1/stories/:id/comments` | ✅ | `{ text, parentId? }` | `{ comment: Comment }` |
 
 > **Stories Feed (`/feed`):** Returns active stories from **self + following** (friend's stories), grouped by author with view status.
 
@@ -189,13 +189,13 @@ curl -X POST http://localhost:8787/v1/auth/login \
 
 | Method | Endpoint | Auth | Request Body | Response |
 |--------|----------|------|--------------|----------|
-| GET | `/` | ✅ | `page?, perPage?` | Offset paginated conversations (+ last message) |
-| POST | `/` | ✅ | `{ participantIds: string[], groupName?, groupAvatar? }` | `{ conversation: Conversation }` |
-| GET | `/:id/messages` | ✅ | `cursor?, perPage?` | Cursor paginated messages |
-| POST | `/:id/messages` | ✅ | `{ contentType, textContent?, mediaUrl?, mediaThumbnail?, mediaDuration?, referenceId?, replyToId? }` | `{ message: Message }` |
-| POST | `/:id/read` | ✅ | — | `204` |
-| PUT | `/:id/mute` | ✅ | `{ mute: boolean }` | `204` |
-| DELETE | `/messages/:messageId` | ✅ | — | `204` |
+| GET | `/v1/conversations/` | ✅ | `page?, perPage?` | Offset paginated conversations (+ last message) |
+| POST | `/v1/conversations/` | ✅ | `{ participantIds: string[], groupName?, groupAvatar? }` | `{ conversation: Conversation }` |
+| GET | `/v1/conversations/:id/messages` | ✅ | `cursor?, perPage?` | Cursor paginated messages |
+| POST | `/v1/conversations/:id/messages` | ✅ | `{ contentType, textContent?, mediaUrl?, mediaThumbnail?, mediaDuration?, referenceId?, replyToId? }` | `{ message: Message }` |
+| POST | `/v1/conversations/:id/read` | ✅ | — | `204` |
+| PUT | `/v1/conversations/:id/mute` | ✅ | `{ mute: boolean }` | `204` |
+| DELETE | `/v1/conversations/messages/:messageId` | ✅ | — | `204` |
 
 ---
 
@@ -203,10 +203,10 @@ curl -X POST http://localhost:8787/v1/auth/login \
 
 | Method | Endpoint | Auth | Request Body | Response |
 |--------|----------|------|--------------|----------|
-| GET | `/` | ✅ | `page?, perPage?` | Paginated notifications |
-| GET | `/unread-count` | ✅ | — | `{ count: number }` |
-| POST | `/read-all` | ✅ | — | `204` |
-| POST | `/:id/read` | ✅ | — | `204` |
+| GET | `/v1/notifications/` | ✅ | `page?, perPage?` | Paginated notifications |
+| GET | `/v1/notifications/unread-count` | ✅ | — | `{ count: number }` |
+| POST | `/v1/notifications/read-all` | ✅ | — | `204` |
+| POST | `/v1/notifications/:id/read` | ✅ | — | `204` |
 
 > **Notification includes:** `postThumbnailUrl` for LIKE/COMMENT/TAGGED_IN_POST
 
@@ -218,13 +218,13 @@ Uses Neon Object Storage (S3-compatible).
 
 | Method | Endpoint | Auth | Request | Response |
 |--------|----------|------|---------|----------|
-| POST | `/presign` | ✅ | `{ contentType, maxSize?, prefix? }` | `{ uploadUrl, pendingUploadId, storagePath, url, expiresIn }` |
-| POST | `/confirm` | ✅ | `{ pendingUploadId, targetType, targetId? }` | `{ pendingUploadId, url, storagePath }` |
-| POST | `/image` | ✅ | `file` (max 10MB, image/*) | `{ url, width, height, pendingUploadId }` |
-| POST | `/video` | ✅ | `file` (max 100MB, video/*) | `{ url, thumbnailUrl, duration, width, height, pendingUploadId }` |
-| POST | `/avatar` | ✅ | `file` (max 10MB, image/*) | `{ url }` |
-| GET | `/pending/:id` | ✅ | — | `{ pendingUploadId, url, storagePath, confirmed, createdAt }` |
-| DELETE | `/pending/:id` | ✅ | — | `204` |
+| POST | `/v1/upload/presign` | ✅ | `{ contentType, maxSize?, prefix? }` | `{ uploadUrl, pendingUploadId, storagePath, url, expiresIn }` |
+| POST | `/v1/upload/confirm` | ✅ | `{ pendingUploadId, targetType, targetId? }` | `{ pendingUploadId, url, storagePath }` |
+| POST | `/v1/upload/image` | ✅ | `file` (max 10MB, image/*) | `{ url, width, height, pendingUploadId }` |
+| POST | `/v1/upload/video` | ✅ | `file` (max 100MB, video/*) | `{ url, thumbnailUrl, duration, width, height, pendingUploadId }` |
+| POST | `/v1/upload/avatar` | ✅ | `file` (max 10MB, image/*) | `{ url }` |
+| GET | `/v1/upload/pending/:id` | ✅ | — | `{ pendingUploadId, url, storagePath, confirmed, createdAt }` |
+| DELETE | `/v1/upload/pending/:id` | ✅ | — | `204` |
 
 > Creates `PendingUpload` (confirmed: false). Confirmed when used in Post/Story/Reel/Message. Cron deletes unconfirmed after 24h.
 
@@ -240,6 +240,14 @@ Protected by `INTERNAL_CRON_SECRET` (Bearer token). Called by Neon Functions cro
 | POST | `/internal/cleanup/device-tokens` | 🔑 Internal | Delete expired device tokens (expiresAt < now) |
 
 > **Headers:** `Authorization: Bearer <INTERNAL_CRON_SECRET>`
+
+---
+
+## Health Check
+
+| Method | Endpoint | Auth | Response |
+|--------|----------|------|----------|
+| GET | `/health` | ❌ | `{ status: "ok", timestamp: string }` |
 
 ---
 
