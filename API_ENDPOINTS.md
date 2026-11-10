@@ -1,11 +1,11 @@
 # API Endpoints Reference — Instagram Clone Backend
 
-> **Base URL:** `http://localhost:3000/v1` (dev) | `https://<branch>-<project>.neonfunctions.app/v1` (prod)
+> **Base URL:** `http://localhost:8787/v1` (dev) | `https://<branch>-<project>.neonfunctions.app/v1` (prod)
 > **Auth:** `Authorization: Bearer <better_auth_session_token>` on all endpoints except `/v1/auth/*` public ones
 > **Content-Type:** `application/json` (except multipart uploads)
 > **Response Format:** `{ success: true, data: {...} }` or `{ success: false, error: "CODE", message: "..." }`
 >
-> **Auth Model:** Better Auth (via Neon Auth) with scrypt password hashing (N=16384, r=16, p=1, dkLen=64). Sessions stored in database with 7-day JWT expiry. Token verification via JWKS at `{BETTER_AUTH_URL}/.well-known/jwks.json`. Email verification disabled for dev.
+> **Auth Model:** Better Auth (via Neon Auth) with **bcrypt** password hashing (cost 10). Sessions stored in database with 7-day sliding expiry. Token verification via database session lookup. Email verification disabled for dev.
 
 ---
 
@@ -15,8 +15,8 @@ Standard Better Auth endpoints are also available at `/api/auth/*` (see below).
 
 | Method | Endpoint | Auth | Request Body | Response |
 |--------|----------|------|--------------|----------|
-| POST | `/register` | ❌ | `{ email, password, username, fullName, phone? }` | `{ user: User }` |
-| POST | `/login` | ❌ | `{ email, password }` | `{ user: User }` |
+| POST | `/register` | ❌ | `{ email, password, username, fullName, phone? }` | `{ user: User, accessToken: string, refreshToken: string, expiresAt: number }` |
+| POST | `/login` | ❌ | `{ email, password }` | `{ user: User, accessToken: string, refreshToken: string, expiresAt: number }` |
 | POST | `/logout` | ✅ | — | `{ message: string }` |
 | POST | `/logout-all-devices` | ✅ | — | `{ message: string }` |
 | POST | `/change-password` | ✅ | `{ currentPassword, newPassword }` | `{ message: string }` |
@@ -24,7 +24,7 @@ Standard Better Auth endpoints are also available at `/api/auth/*` (see below).
 | POST | `/verify-email` | ❌ | `{ token }` | `{ message: string }` |
 | POST | `/resend-verification` | ❌ | `{ email }` | `{ message: string }` |
 | GET | `/me` | ✅ | — | `{ user: User }` |
-| POST | `/refresh` | ❌ | — | `{ session: Session }` |
+| POST | `/refresh` | ❌ | `Authorization: Bearer <refreshToken>` | `{ accessToken: string, refreshToken: string, expiresAt: number }` |
 
 ### Better Auth Standard Endpoints (`/api/auth/*`)
 
@@ -44,72 +44,74 @@ All 20 seeded users use password: `password123`
 
 | Email | Username | Full Name |
 |-------|----------|-----------|
-| `maiduong1@example.com` | `maiduong1` | Mai Duong |
-| `sonphan2@example.com` | `sonphan2` | Son Phan |
-| `ducpham3@example.com` | `ducpham3` | Duc Pham |
-| `hienlam4@example.com` | `hienlam4` | Hien Lam |
-| `vyvu5@example.com` | `vyvu5` | Vy Vu |
-| `mypham6@example.com` | `mypham6` | My Pham |
-| `baodang7@example.com` | `baodang7` | Bao Dang |
-| `maile8@example.com` | `maile8` | Mai Le |
-| `huyhua9@example.com` | `huyhua9` | Huy Hua |
-| `mynguyen10@example.com` | `mynguyen10` | My Nguyen |
-| `mailam11@example.com` | `mailam11` | Mai Lam |
-| `lanngo12@example.com` | `lanngo12` | Lan Ngo |
-| `ngocvo13@example.com` | `ngocvo13` | Ngoc Vo |
-| `sonhoang14@example.com` | `sonhoang14` | Son Hoang |
-| `sonngo15@example.com` | `sonngo15` | Son Ngo |
-| `khoahuynh16@example.com` | `khoahuynh16` | Khoa Huynh |
-| `tuanngo17@example.com` | `tuanngo17` | Tuan Ngo |
-| `quynhvo18@example.com` | `quynhvo18` | Quynh Vo |
-| `tuanduong19@example.com` | `tuanduong19` | Tuan Duong |
-| `linhtruong20@example.com` | `linhtruong20` | Linh Truong |
+| `minhnguyen1@example.com` | `minhnguyen1` | Minh Nguyen |
+| `lantran2@example.com` | `lantran2` | Lan Tran |
+| `huyhua3@example.com` | `huyhua3` | Huy Hua |
+| `thaopham4@example.com` | `thaopham4` | Thao Pham |
+| `ducle5@example.com` | `ducle5` | Duc Le |
+| `maipham6@example.com` | `maipham6` | Mai Pham |
+| `khoahuynh7@example.com` | `khoahuynh7` | Khoa Huynh |
+| `ngocvu8@example.com` | `ngocvu8` | Ngoc Vu |
+| `phongdang9@example.com` | `phongdang9` | Phong Dang |
+| `hienbui10@example.com` | `hienbui10` | Hien Bui |
+| `namdo11@example.com` | `namdo11` | Nam Do |
+| `hatruong12@example.com` | `hatruong12` | Ha Truong |
+| `tuandinh13@example.com` | `tuandinh13` | Tuan Dinh |
+| `linhlam14@example.com` | `linhlam14` | Linh Lam |
+| `vinhnguyen15@example.com` | `vinhnguyen15` | Vinh Nguyen |
+| `trangle16@example.com` | `trangle16` | Trang Le |
+| `khanhduong17@example.com` | `khanhduong17` | Khanh Duong |
+| `myly18@example.com` | `myly18` | My Ly |
+| `dattruong19@example.com` | `dattruong19` | Dat Truong |
+| `quynhpham20@example.com` | `quynhpham20` | Quynh Pham |
 
 **Example Login:**
 ```bash
-curl -X POST http://localhost:3000/v1/auth/login \
+curl -X POST http://localhost:8787/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email": "maiduong1@example.com", "password": "password123"}'
+  -d '{"email": "minhnguyen1@example.com", "password": "password123"}'
 ```
 
 ---
 
-## User Profile & Settings (`/v1/user` & `/v1/users`)
+## User Profile & Settings (`/v1/user`)
+
+**Note:** All user endpoints are mounted at `/v1/user` (singular), NOT `/v1/users`. iOS client should use `/v1/user/profile` and `/v1/user/:id`.
 
 | Method | Endpoint | Auth | Request Body | Response | Notes |
 |--------|----------|------|--------------|----------|-------|
-| GET | `/v1/user/profile` | ✅ | — | `{ user: User }` | **Alias** of `/v1/users/me` (iOS uses this) |
+| GET | `/v1/user/me` | ✅ | — | `{ user: User }` | Canonical current user profile |
+| GET | `/v1/user/profile` | ✅ | — | `{ user: User }` | **iOS alias** for `/v1/user/me` |
+| PUT | `/v1/user/me` | ✅ | `{ fullName?, bio?, website?, isPrivate? }` | `{ user: User }` | Full update |
 | PUT | `/v1/user/profile` | ✅ | `{ name }` | `{ user: User }` | **iOS sends `name` only** |
 | GET | `/v1/user/settings` | ✅ | — | `{ settings: UserSettings }` | |
 | PUT | `/v1/user/settings` | ✅ | `{ language?, biometricEnabled?, pushEnabled?, darkMode? }` | `{ settings: UserSettings }` | |
-| GET | `/v1/users/me` | ✅ | — | `{ user: User }` | Canonical profile |
-| PUT | `/v1/users/me` | ✅ | `{ fullName?, bio?, website?, isPrivate? }` | `{ user: User }` | Full update |
+| GET | `/v1/user/:id` | ✅ | — | `{ user: User }` (+ `isFollowing`, `isBlocked`) | Get user by ID |
 
 ---
 
-## Social Graph (`/v1/users`)
+## Social Graph (`/v1/user`)
 
 | Method | Endpoint | Auth | Query/Body | Response |
 |--------|----------|------|------------|----------|
-| GET | `/v1/users/:id` | ✅ | — | `{ user: User }` (+ `isFollowing`, `isFollowedBy`) |
-| GET | `/v1/users/search` | ✅ | `q, page?, perPage?` | Paginated users |
-| GET | `/v1/users/suggested` | ✅ | `page?, perPage?` | Paginated users |
-| GET | `/v1/users/:id/followers` | ✅ | `page?, perPage?` | Paginated users (+ `followedAt`) |
-| GET | `/v1/users/:id/following` | ✅ | `page?, perPage?` | Paginated users (+ `followedAt`) |
-| POST | `/v1/users/:id/follow` | ✅ | — | `204` |
-| DELETE | `/v1/users/:id/follow` | ✅ | — | `204` |
-| POST | `/v1/users/:id/block` | ✅ | — | `204` |
-| DELETE | `/v1/users/:id/block` | ✅ | — | `204` |
-| GET | `/v1/users/me/blocked` | ✅ | `page?, perPage?` | Paginated users (+ `blockedAt`) |
+| GET | `/v1/user/search` | ✅ | `q, page?, perPage?` | Paginated users |
+| GET | `/v1/user/suggested` | ✅ | `page?, perPage?` | Paginated users |
+| GET | `/v1/user/:id/followers` | ✅ | `page?, perPage?` | Paginated users (+ `followedAt`) |
+| GET | `/v1/user/:id/following` | ✅ | `page?, perPage?` | Paginated users (+ `followedAt`) |
+| POST | `/v1/user/:id/follow` | ✅ | — | `204` |
+| DELETE | `/v1/user/:id/follow` | ✅ | — | `204` |
+| POST | `/v1/user/:id/block` | ✅ | — | `204` |
+| DELETE | `/v1/user/:id/block` | ✅ | — | `204` |
+| GET | `/v1/user/me/blocked` | ✅ | `page?, perPage?` | Paginated users (+ `blockedAt`) |
 
 ---
 
-## Close Friends (`/v1/users/me/close-friends`)
+## Close Friends (`/v1/user/me/close-friends`)
 
 | Method | Endpoint | Auth | Request Body | Response |
 |--------|----------|------|--------------|----------|
-| GET | `/v1/users/me/close-friends` | ✅ | — | `{ items: User[] }` |
-| PUT | `/v1/users/me/close-friends` | ✅ | `{ friendIds: string[] }` | `204` (full-set replace) |
+| GET | `/v1/user/me/close-friends` | ✅ | — | `{ items: User[] }` |
+| PUT | `/v1/user/me/close-friends` | ✅ | `{ friendIds: string[] }` | `204` (full-set replace) |
 
 ---
 
@@ -117,8 +119,8 @@ curl -X POST http://localhost:3000/v1/auth/login \
 
 | Method | Endpoint | Auth | Request Body | Response |
 |--------|----------|------|--------------|----------|
-| POST | `/v1/users/me/device-token` | ✅ | `{ token: string, platform: "IOS" \| "ANDROID" }` | `204` |
-| DELETE | `/v1/users/me/device-token` | ✅ | `{ token: string }` | `204` |
+| POST | `/v1/user/me/device-token` | ✅ | `{ token: string, platform: "IOS" \| "ANDROID" }` | `204` |
+| DELETE | `/v1/user/me/device-token` | ✅ | `{ token: string }` | `204` |
 
 ---
 
@@ -138,6 +140,8 @@ curl -X POST http://localhost:3000/v1/auth/login \
 | DELETE | `/:id/like` | ✅ | — | `204` |
 | POST | `/:id/save` | ✅ | — | `204` |
 | DELETE | `/:id/save` | ✅ | — | `204` |
+| **GET** | `/:id/comments` | ✅ | `page?, perPage?` | **Paginated comments** |
+| **POST** | `/:id/comments` | ✅ | `{ text, parentId? }` | **`{ comment: Comment }`** |
 
 > **MediaInput:** `{ url, type: "IMAGE" \| "VIDEO", width?, height?, duration?, pendingUploadId? }`
 
@@ -169,11 +173,15 @@ curl -X POST http://localhost:3000/v1/auth/login \
 
 | Method | Endpoint | Auth | Request Body | Response |
 |--------|----------|------|--------------|----------|
-| GET | `/feed` | ✅ | — | `{ items: Story[] }` |
+| GET | `/feed` | ✅ | — | `{ items: StoryGroup[] }` |
 | GET | `/:userId/items` | ✅ | — | `{ stories: StoryItem[] }` |
 | POST | `/` | ✅ | `{ mediaUrl, type, duration?, stickerType?, stickerData? }` | `{ story: Story }` |
 | POST | `/:storyId/view` | ✅ | — | `204` |
 | DELETE | `/:storyId` | ✅ | — | `204` |
+| **GET** | `/:storyId/comments` | ✅ | `page?, perPage?` | **Paginated comments** |
+| **POST** | `/:storyId/comments` | ✅ | `{ text, parentId? }` | **`{ comment: Comment }`** |
+
+> **Stories Feed (`/feed`):** Returns active stories from **self + following** (friend's stories), grouped by author with view status.
 
 ---
 
@@ -237,8 +245,12 @@ Protected by `INTERNAL_CRON_SECRET` (Bearer token). Called by Neon Functions cro
 
 ## WebSocket
 
-**Connection:** `wss://<branch>-<project>.neonfunctions.app/ws?token=<session_token>`  
-Accepts token via **query param `?token=`** (Better Auth session token).
+**Connection:** `wss://<branch>-<project>.neonfunctions.app/ws`
+
+**Token Transmission (in order of preference):**
+1. **Authorization header:** `Authorization: Bearer <session_token>`
+2. **Sec-WebSocket-Protocol header:** `Sec-WebSocket-Protocol: bearer.<session_token>` (standard for WebSocket auth)
+3. **Query parameter (legacy):** `?token=<session_token>` (less secure, visible in logs)
 
 ### Client → Server
 
@@ -293,7 +305,7 @@ interface User {
   followingCount: number;
   createdAt: string;
   isFollowing?: boolean;    // computed
-  isFollowedBy?: boolean;   // computed
+  isBlocked?: boolean;      // computed
 }
 
 // UserSettings
@@ -345,6 +357,20 @@ interface Reel {
   isSaved: boolean;
 }
 
+// Comment
+interface Comment {
+  id: string;
+  postId?: string;
+  reelId?: string;
+  storyId?: string;
+  authorId: string;
+  text: string;
+  parentId?: string;
+  likesCount: number;
+  createdAt: string;
+  author: User;
+}
+
 // Message
 interface Message {
   id: string;
@@ -388,6 +414,33 @@ interface Notification {
   createdAt: string;
   actor: User;
 }
+
+// StoryGroup (feed response)
+interface StoryGroup {
+  userId: string;
+  author: User;
+  stories: Story[];
+}
+
+// Story
+interface Story {
+  id: string;
+  createdAt: string;
+  expiresAt: string;
+  items: StoryItem[];
+  viewed: boolean;
+}
+
+// StoryItem
+interface StoryItem {
+  id: string;
+  mediaUrl: string;
+  type: "IMAGE" | "VIDEO";
+  duration: number;
+  sortOrder: number;
+  stickerType?: string;
+  stickerData?: string;
+}
 ```
 
 ---
@@ -397,8 +450,8 @@ interface Notification {
 | Code | HTTP | Meaning |
 |------|------|---------|
 | `UNAUTHORIZED` | 401 | Invalid/expired token, user not found |
-| `TOKEN_EXPIRED` | 401 | JWT token expired |
-| `INVALID_TOKEN` | 401 | Invalid token signature |
+| `TOKEN_EXPIRED` | 401 | Session token expired |
+| `INVALID_TOKEN` | 401 | Invalid token format |
 | `FORBIDDEN` | 403 | Blocked, private account, not author |
 | `NOT_FOUND` | 404 | Resource doesn't exist |
 | `VALIDATION_ERROR` | 422 | Zod validation failed |
@@ -417,7 +470,7 @@ interface Notification {
 ## Pagination
 
 **Offset:** `?page=1&perPage=20` (max 50) → `{ items, page, perPage, total, hasMore }`  
-**Cursor:** `?cursor=<timestamp>&perPage=20` → `{ items, nextCursor, hasMore }` (feeds - implemented for posts, reels, conversations)
+**Cursor:** `?cursor=<timestamp>&perPage=20` → `{ items, nextCursor, hasMore }` (feeds — implemented for posts, reels, conversations)
 
 ---
 
@@ -427,10 +480,11 @@ interface Notification {
 2. **Send `name`** not `fullName` in PUT `/v1/user/profile`
 3. **Backend returns camelCase** — no snake_case decoding needed (remove `.convertFromSnakeCase`)
 4. **Attach Better Auth session token** to every request: `Authorization: Bearer <token>`
-5. **WebSocket:** Connect with `wss://host/ws?token=<session_token>`
-6. **Uploads:** Use returned `pendingUploadId` in Post/Story/Reel creation
+5. **WebSocket:** Connect with token via Authorization header or Sec-WebSocket-Protocol (preferred over query param)
+6. **Uploads:** Use returned `pendingUploadId` in Post/Story/Reel/Message creation
 7. **Reel/Post computed fields:** `isLiked`, `isSaved`, `author.isFollowing` included in responses
 8. **Notification preview:** Use `postThumbnailUrl` for badge images
+9. **Comments:** Posts, Reels, and Stories all support comments with replies (parentId)
 
 ---
 

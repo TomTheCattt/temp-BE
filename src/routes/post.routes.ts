@@ -4,7 +4,7 @@ import { z } from "zod";
 import { authMiddleware, getCurrentUser } from "../middleware/auth";
 import { db } from "../db/client";
 import * as schema from "../db/schema";
-import { eq, and, desc, asc, count, sql, inArray, lt, gt, not } from "drizzle-orm";
+import { eq, and, desc, asc, count, sql, inArray, lt, gt, not, isNull } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 
 const createPostSchema = z.object({
@@ -465,6 +465,122 @@ postRouter.delete("/:id/save", async (c) => {
   const postId = c.req.param("id");
   await db.delete(schema.savedPosts).where(and(eq(schema.savedPosts.userId, user.id), eq(schema.savedPosts.postId, postId)));
   return c.status(204);
+});
+
+// GET /v1/posts/:id/comments - Get post comments
+postRouter.get("/:id/comments", async (c) => {
+  const user = getCurrentUser(c);
+  const postId = c.req.param("id");
+  const { page, perPage, offset } = getPagination(c);
+
+  const post = await db.query.posts.findFirst({ where: eq(schema.posts.id, postId), columns: { id: true, authorId: true } });
+  if (!post) throw new HTTPException(404, { message: "Post not found" });
+
+  // Check if user can view post (private account check)
+  if (post.authorId !== user.id) {
+    const postAuthor = await db.query.users.findFirst({ where: eq(schema.users.id, post.authorId), columns: { isPrivate: true } });
+    if (postAuthor?.isPrivate) {
+      const following = await db.query.follows.findFirst({ where: and(eq(schema.follows.followerId, user.id), eq(schema.follows.followingId, post.authorId)) });
+      if (!following) throw new HTTPException(403, { message: "This account is private" });
+    }
+  }
+
+  const [commentsList, total] = await Promise.all([
+    db
+      .select({
+        id: schema.comments.id,
+        postId: schema.comments.postId,
+        authorId: schema.comments.authorId,
+        text: schema.comments.text,
+        parentId: schema.comments.parentId,
+        likesCount: schema.comments.likesCount,
+        createdAt: schema.comments.createdAt,
+        author: {
+          id: schema.users.id,
+          username: schema.users.username,
+          fullName: schema.users.fullName,
+          avatarUrl: schema.users.avatarUrl,
+          isVerified: schema.users.isVerified,
+        },
+      })
+      .from(schema.comments)
+      .innerJoin(schema.users, eq(schema.users.id, schema.comments.authorId))
+      .where(and(eq(schema.comments.postId, postId), isNull(schema.comments.parentId)))
+      .orderBy(desc(schema.comments.createdAt))
+      .limit(perPage)
+      .offset(offset),
+    db.select({ count: count() }).from(schema.comments).where(and(eq(schema.comments.postId, postId), isNull(schema.comments.parentId))),
+  ]);
+
+  return c.json({
+    success: true,
+    data: {
+      items: commentsList,
+      page,
+      perPage,
+      total: total[0]?.count || 0,
+      hasMore: page * perPage < (total[0]?.count || 0),
+    },
+  });
+});
+
+// POST /v1/posts/:id/comments - Add post comment
+postRouter.post("/:id/comments", zValidator("json", z.object({ text: z.string().min(1).max(1000), parentId: z.string().uuid().optional() })), async (c) => {
+  const user = getCurrentUser(c);
+  const postId = c.req.param("id");
+  const { text, parentId } = c.req.valid("json");
+
+  const post = await db.query.posts.findFirst({ where: eq(schema.posts.id, postId), columns: { id: true, authorId: true } });
+  if (!post) throw new HTTPException(404, { message: "Post not found" });
+
+  // Check if user can comment (private account check)
+  if (post.authorId !== user.id) {
+    const postAuthor = await db.query.users.findFirst({ where: eq(schema.users.id, post.authorId), columns: { isPrivate: true } });
+    if (postAuthor?.isPrivate) {
+      const following = await db.query.follows.findFirst({ where: and(eq(schema.follows.followerId, user.id), eq(schema.follows.followingId, post.authorId)) });
+      if (!following) throw new HTTPException(403, { message: "This account is private" });
+    }
+  }
+
+  if (parentId) {
+    const parentComment = await db.query.comments.findFirst({ where: eq(schema.comments.id, parentId) });
+    if (!parentComment || parentComment.postId !== postId) {
+      throw new HTTPException(400, { message: "Invalid parent comment" });
+    }
+  }
+
+  const [comment] = await db
+    .insert(schema.comments)
+    .values({
+      postId,
+      authorId: user.id,
+      text,
+      parentId,
+    })
+    .returning();
+
+  // Increment comments count on post
+  await db.update(schema.posts).set({ commentsCount: sql`${schema.posts.commentsCount} + 1` }).where(eq(schema.posts.id, postId));
+
+  // Notify post author (if not self)
+  if (post.authorId !== user.id) {
+    await db.insert(schema.notifications).values({ recipientId: post.authorId, actorId: user.id, type: "COMMENT", postId, commentText: text });
+  }
+
+  // If replying to a comment, notify parent comment author
+  if (parentId) {
+    const parentComment = await db.query.comments.findFirst({ where: eq(schema.comments.id, parentId) });
+    if (parentComment && parentComment.authorId !== user.id && parentComment.authorId !== post.authorId) {
+      await db.insert(schema.notifications).values({ recipientId: parentComment.authorId, actorId: user.id, type: "COMMENT", postId, commentText: text });
+    }
+  }
+
+  const createdComment = await db.query.comments.findFirst({
+    where: eq(schema.comments.id, comment.id),
+    with: { author: true },
+  });
+
+  return c.json({ success: true, data: { comment: createdComment } }, 201);
 });
 
 export { postRouter };

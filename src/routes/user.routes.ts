@@ -234,6 +234,72 @@ userRouter.get("/search", zValidator("query", searchSchema), async (c) => {
   });
 });
 
+// GET /v1/user/:id - Get user by ID (public profile)
+userRouter.get("/:id", async (c) => {
+  const currentUser = getCurrentUser(c);
+  const targetId = c.req.param("id");
+
+  const targetUser = await db.query.users.findFirst({
+    where: eq(schema.users.id, targetId),
+  });
+
+  if (!targetUser) {
+    throw new HTTPException(404, { message: "User not found" });
+  }
+
+  // Check if target user is private and current user isn't following
+  if (targetUser.isPrivate && targetId !== currentUser.id) {
+    const following = await db.query.follows.findFirst({
+      where: and(eq(schema.follows.followerId, currentUser.id), eq(schema.follows.followingId, targetId)),
+    });
+    if (!following) {
+      throw new HTTPException(403, { message: "This account is private" });
+    }
+  }
+
+  // Check if current user is following target
+  const following = await db.query.follows.findFirst({
+    where: and(eq(schema.follows.followerId, currentUser.id), eq(schema.follows.followingId, targetId)),
+  });
+
+  // Check if current user has blocked target or vice versa
+  const isBlocked = await db.query.blocks.findFirst({
+    where: and(
+      eq(schema.blocks.blockerId, currentUser.id),
+      eq(schema.blocks.blockedId, targetId)
+    ),
+  });
+
+  const hasBlocked = await db.query.blocks.findFirst({
+    where: and(
+      eq(schema.blocks.blockerId, targetId),
+      eq(schema.blocks.blockedId, currentUser.id)
+    ),
+  });
+
+  return c.json({
+    success: true,
+    data: {
+      user: {
+        id: targetUser.id,
+        username: targetUser.username,
+        fullName: targetUser.fullName,
+        avatarUrl: targetUser.avatarUrl,
+        bio: targetUser.bio,
+        website: targetUser.website,
+        isVerified: targetUser.isVerified,
+        isPrivate: targetUser.isPrivate,
+        postsCount: targetUser.postsCount,
+        followersCount: targetUser.followersCount,
+        followingCount: targetUser.followingCount,
+        createdAt: targetUser.createdAt,
+        isFollowing: !!following,
+        isBlocked: !!isBlocked || !!hasBlocked,
+      },
+    },
+  });
+});
+
 // GET /v1/users/suggested - Suggested users
 userRouter.get("/suggested", async (c) => {
   const user = getCurrentUser(c);

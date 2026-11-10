@@ -227,6 +227,7 @@ export const comments = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     postId: uuid("post_id").references(() => posts.id, { onDelete: "cascade" }),
     reelId: uuid("reel_id").references(() => reels.id, { onDelete: "cascade" }),
+    storyId: uuid("story_id").references(() => stories.id, { onDelete: "cascade" }),
     authorId: uuid("author_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -238,6 +239,7 @@ export const comments = pgTable(
   (table) => ({
     postIdx: index("comments_post_id_created_at_idx").on(table.postId, table.createdAt),
     reelIdx: index("comments_reel_id_created_at_idx").on(table.reelId, table.createdAt),
+    storyIdx: index("comments_story_id_created_at_idx").on(table.storyId, table.createdAt),
     parentIdx: index("comments_parent_id_idx").on(table.parentId),
   })
 );

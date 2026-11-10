@@ -4,7 +4,7 @@ import { z } from "zod";
 import { authMiddleware, getCurrentUser } from "../middleware/auth";
 import { db } from "../db/client";
 import * as schema from "../db/schema";
-import { eq, and, desc, asc, count, sql, inArray, lt, not } from "drizzle-orm";
+import { eq, and, desc, asc, count, sql, inArray, lt, not, isNull } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 
 const createStorySchema = z.object({
@@ -236,6 +236,119 @@ storyRouter.delete("/:storyId", async (c) => {
   await db.delete(schema.stories).where(eq(schema.stories.id, storyId));
 
   return c.status(204);
+});
+
+// GET /v1/stories/:id/comments - Get story comments
+storyRouter.get("/:id/comments", async (c) => {
+  const user = getCurrentUser(c);
+  const storyId = c.req.param("id");
+  const { page, perPage, offset } = getPagination(c);
+
+  const story = await db.query.stories.findFirst({ where: eq(schema.stories.id, storyId), columns: { id: true, authorId: true } });
+  if (!story) throw new HTTPException(404, { message: "Story not found" });
+
+  // Check if user can view story (private account check)
+  if (story.authorId !== user.id) {
+    const storyAuthor = await db.query.users.findFirst({ where: eq(schema.users.id, story.authorId), columns: { isPrivate: true } });
+    if (storyAuthor?.isPrivate) {
+      const following = await db.query.follows.findFirst({ where: and(eq(schema.follows.followerId, user.id), eq(schema.follows.followingId, story.authorId)) });
+      if (!following) throw new HTTPException(403, { message: "This account is private" });
+    }
+  }
+
+  const [commentsList, total] = await Promise.all([
+    db
+      .select({
+        id: schema.comments.id,
+        storyId: schema.comments.storyId,
+        authorId: schema.comments.authorId,
+        text: schema.comments.text,
+        parentId: schema.comments.parentId,
+        likesCount: schema.comments.likesCount,
+        createdAt: schema.comments.createdAt,
+        author: {
+          id: schema.users.id,
+          username: schema.users.username,
+          fullName: schema.users.fullName,
+          avatarUrl: schema.users.avatarUrl,
+          isVerified: schema.users.isVerified,
+        },
+      })
+      .from(schema.comments)
+      .innerJoin(schema.users, eq(schema.users.id, schema.comments.authorId))
+      .where(and(eq(schema.comments.storyId, storyId), isNull(schema.comments.parentId)))
+      .orderBy(desc(schema.comments.createdAt))
+      .limit(perPage)
+      .offset(offset),
+    db.select({ count: count() }).from(schema.comments).where(and(eq(schema.comments.storyId, storyId), isNull(schema.comments.parentId))),
+  ]);
+
+  return c.json({
+    success: true,
+    data: {
+      items: commentsList,
+      page,
+      perPage,
+      total: total[0]?.count || 0,
+      hasMore: page * perPage < (total[0]?.count || 0),
+    },
+  });
+});
+
+// POST /v1/stories/:id/comments - Add story comment
+storyRouter.post("/:id/comments", zValidator("json", z.object({ text: z.string().min(1).max(1000), parentId: z.string().uuid().optional() })), async (c) => {
+  const user = getCurrentUser(c);
+  const storyId = c.req.param("id");
+  const { text, parentId } = c.req.valid("json");
+
+  const story = await db.query.stories.findFirst({ where: eq(schema.stories.id, storyId), columns: { id: true, authorId: true } });
+  if (!story) throw new HTTPException(404, { message: "Story not found" });
+
+  // Check if user can comment (private account check)
+  if (story.authorId !== user.id) {
+    const storyAuthor = await db.query.users.findFirst({ where: eq(schema.users.id, story.authorId), columns: { isPrivate: true } });
+    if (storyAuthor?.isPrivate) {
+      const following = await db.query.follows.findFirst({ where: and(eq(schema.follows.followerId, user.id), eq(schema.follows.followingId, story.authorId)) });
+      if (!following) throw new HTTPException(403, { message: "This account is private" });
+    }
+  }
+
+  if (parentId) {
+    const parentComment = await db.query.comments.findFirst({ where: eq(schema.comments.id, parentId) });
+    if (!parentComment || parentComment.storyId !== storyId) {
+      throw new HTTPException(400, { message: "Invalid parent comment" });
+    }
+  }
+
+  const [comment] = await db
+    .insert(schema.comments)
+    .values({
+      storyId,
+      authorId: user.id,
+      text,
+      parentId,
+    })
+    .returning();
+
+  // Notify story author (if not self)
+  if (story.authorId !== user.id) {
+    await db.insert(schema.notifications).values({ recipientId: story.authorId, actorId: user.id, type: "COMMENT", storyId, commentText: text });
+  }
+
+  // If replying to a comment, notify parent comment author
+  if (parentId) {
+    const parentComment = await db.query.comments.findFirst({ where: eq(schema.comments.id, parentId) });
+    if (parentComment && parentComment.authorId !== user.id && parentComment.authorId !== story.authorId) {
+      await db.insert(schema.notifications).values({ recipientId: parentComment.authorId, actorId: user.id, type: "COMMENT", storyId, commentText: text });
+    }
+  }
+
+  const createdComment = await db.query.comments.findFirst({
+    where: eq(schema.comments.id, comment.id),
+    with: { author: true },
+  });
+
+  return c.json({ success: true, data: { comment: createdComment } }, 201);
 });
 
 export { storyRouter };
