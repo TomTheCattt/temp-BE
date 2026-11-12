@@ -1,0 +1,170 @@
+name: Staging Deployment
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to deploy'
+        required: false
+        type: string
+
+env:
+  NODE_VERSION: "24"
+  NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+  NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+  NEON_REGION: ${{ secrets.NEON_REGION }}
+
+jobs:
+  staging-deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    outputs:
+      api_url: ${{ steps.deploy-functions.outputs.api_url }}
+      ws_url: ${{ steps.deploy-functions.outputs.ws_url }}
+      database_url: ${{ steps.get-db-url.outputs.database_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Neon CLI
+        run: npm install -g neonctl@latest
+
+      - name: Authenticate with Neon
+        run: neon auth --api-key "${NEON_API_KEY}"
+
+      - name: Ensure staging branch exists
+        run: |
+          # Check if staging branch exists
+          if neon branches list --project-id "${NEON_PROJECT_ID}" --json | jq -e '.[] | select(.name == "staging")' > /dev/null; then
+            echo "Staging branch exists"
+            neon checkout staging --project-id "${NEON_PROJECT_ID}"
+          else
+            echo "Creating staging branch from main..."
+            neon branch staging --project-id "${NEON_PROJECT_ID}" --parent main --create
+          fi
+
+      - name: Get database URL for staging
+        id: get-db-url
+        run: |
+          DATABASE_URL=$(neon connection-string staging --project-id "${NEON_PROJECT_ID}" --pooled --role=neon_superuser)
+          echo "database_url=${DATABASE_URL}" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Generate Drizzle schema
+        run: npm run drizzle:generate
+
+      - name: Run database migrations on staging
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ steps.get-db-url.outputs.database_url }}
+
+      - name: Deploy Neon Functions to Staging
+        id: deploy-functions
+        run: |
+          # Create staging environment file
+          cat > .env.staging << EOF
+          DATABASE_URL=${{ steps.get-db-url.outputs.database_url }}
+          BETTER_AUTH_SECRET=${{ secrets.BETTER_AUTH_SECRET }}
+          BETTER_AUTH_URL=https://staging-api.compute.${{ secrets.NEON_REGION }}.aws.neon.tech
+          RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
+          CORS_ORIGIN=https://staging-api.compute.${{ secrets.NEON_REGION }}.aws.neon.tech,https://staging.instagram-clone.app,http://localhost:3000
+          LOG_LEVEL=info
+          NODE_ENV=staging
+          NEON_STORAGE_ACCESS_KEY_ID=${{ secrets.NEON_STORAGE_ACCESS_KEY_ID }}
+          NEON_STORAGE_SECRET_ACCESS_KEY=${{ secrets.NEON_STORAGE_SECRET_ACCESS_KEY }}
+          NEON_STORAGE_ENDPOINT=${{ secrets.NEON_STORAGE_ENDPOINT }}
+          SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+          INTERNAL_CRON_SECRET=${{ secrets.INTERNAL_CRON_SECRET }}
+          NEON_AUTH_JWKS_URL=${{ secrets.NEON_AUTH_JWKS_URL }}
+          NEON_AUTH_BASE_URL=${{ secrets.NEON_AUTH_BASE_URL }}
+          NEON_AI_GATEWAY_API_KEY=${{ secrets.NEON_AI_GATEWAY_API_KEY }}
+          EOF
+
+          # Deploy using neon.ts config
+          neon deploy --env .env.staging --project-id "${NEON_PROJECT_ID}"
+
+          # Get function URLs
+          API_URL=$(neon functions get api --project-id "${NEON_PROJECT_ID}" --branch staging --json | jq -r '.invocation_url')
+          WS_URL=$(neon functions get ws --project-id "${NEON_PROJECT_ID}" --branch staging --json | jq -r '.invocation_url' | sed 's/https:/wss:/')
+
+          echo "api_url=${API_URL}" >> $GITHUB_OUTPUT
+          echo "ws_url=${WS_URL}" >> $GITHUB_OUTPUT
+
+      - name: Wait for functions to be ready
+        run: |
+          echo "Waiting for staging functions to be ready..."
+          sleep 15
+          # Health check with retries
+          for i in {1..15}; do
+            if curl -sf "${{ steps.deploy-functions.outputs.api_url }}/health" > /dev/null; then
+              echo "Staging API function is healthy"
+              break
+            fi
+            echo "Attempt $i: Staging API not ready yet, waiting..."
+            sleep 10
+          done
+
+      - name: Run staging smoke tests
+        run: |
+          API_URL="${{ steps.deploy-functions.outputs.api_url }}"
+
+          echo "Running staging smoke tests against ${API_URL}"
+
+          # Test health endpoint
+          curl -sf "${API_URL}/health" | jq -e '.success == true'
+
+          # Test metrics endpoint
+          curl -sf "${API_URL}/metrics" | grep -q 'http_requests_total'
+
+          # Test auth endpoints exist
+          curl -sf -X POST "${API_URL}/v1/auth/login" \
+            -H "Content-Type: application/json" \
+            -d '{"email":"test@test.com","password":"wrong"}' \
+            -w "%{http_code}" | grep -q "401"
+
+          echo "Staging smoke tests passed"
+
+      - name: Run contract verification against staging
+        run: |
+          # Verify Pact contracts against staging
+          npm run test:contract:staging
+        env:
+          PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL }}
+          PACT_BROKER_USERNAME: ${{ secrets.PACT_BROKER_USERNAME }}
+          PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
+          STAGING_API_URL: ${{ steps.deploy-functions.outputs.api_url }}
+
+      - name: Notify deployment success
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { api_url, ws_url } = require('${{ steps.staging-deploy.outputs }}');
+            const sha = context.sha.substring(0, 7);
+            const comment = `✅ **Staging Deployment Successful**
+
+            **Commit:** ${sha}
+            **API URL:** ${api_url}
+            **WebSocket URL:** ${ws_url}
+
+            Staging environment is ready for testing.`;
+
+            // Post to a deployment tracking issue or Slack
+            console.log(comment);

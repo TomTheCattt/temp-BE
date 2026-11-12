@@ -1,0 +1,192 @@
+name: Preview Deployment (Neon Branch per PR)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main, develop]
+
+env:
+  NODE_VERSION: "24"
+  NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+  NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+
+jobs:
+  preview-deploy:
+    name: Deploy Preview Branch
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      branch_name: ${{ steps.checkout-branch.outputs.branch_name }}
+      api_url: ${{ steps.deploy-functions.outputs.api_url }}
+      ws_url: ${{ steps.deploy-functions.outputs.ws_url }}
+      database_url: ${{ steps.checkout-branch.outputs.database_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Neon CLI
+        run: npm install -g neonctl@latest
+
+      - name: Authenticate with Neon
+        run: neon auth --api-key "${NEON_API_KEY}"
+
+      - name: Create/Checkout Preview Branch
+        id: checkout-branch
+        run: |
+          # Generate branch name from PR number
+          BRANCH_NAME="preview/pr-${{ github.event.pull_request.number }}"
+
+          # Check if branch exists
+          if neon branches list --project-id "${NEON_PROJECT_ID}" --json | jq -e ".[] | select(.name == \"${BRANCH_NAME}\")" > /dev/null; then
+            echo "Branch ${BRANCH_NAME} exists, checking out..."
+            neon checkout "${BRANCH_NAME}" --project-id "${NEON_PROJECT_ID}"
+          else
+            echo "Creating new preview branch ${BRANCH_NAME}..."
+            neon branch "${BRANCH_NAME}" --project-id "${NEON_PROJECT_ID}" --create
+          fi
+
+          # Get database URL for the branch
+          DATABASE_URL=$(neon connection-string "${BRANCH_NAME}" --project-id "${NEON_PROJECT_ID}" --pooled --role=neon_superuser)
+          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "database_url=${DATABASE_URL}" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Generate Drizzle schema
+        run: npm run drizzle:generate
+
+      - name: Run database migrations on preview branch
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ steps.checkout-branch.outputs.database_url }}
+
+      - name: Deploy Neon Functions
+        id: deploy-functions
+        run: |
+          # Deploy functions with environment variables from .env.local
+          # Create .env.local with branch-specific values
+          cat > .env.local << EOF
+          DATABASE_URL=${{ steps.checkout-branch.outputs.database_url }}
+          BETTER_AUTH_SECRET=${{ secrets.BETTER_AUTH_SECRET }}
+          BETTER_AUTH_URL=https://${{ steps.checkout-branch.outputs.branch_name }}-api.compute.${{ secrets.NEON_REGION }}.aws.neon.tech
+          RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
+          CORS_ORIGIN=https://${{ steps.checkout-branch.outputs.branch_name }}-api.compute.${{ secrets.NEON_REGION }}.aws.neon.tech,http://localhost:3000,http://localhost:8081
+          LOG_LEVEL=debug
+          NODE_ENV=preview
+          NEON_STORAGE_ACCESS_KEY_ID=${{ secrets.NEON_STORAGE_ACCESS_KEY_ID }}
+          NEON_STORAGE_SECRET_ACCESS_KEY=${{ secrets.NEON_STORAGE_SECRET_ACCESS_KEY }}
+          NEON_STORAGE_ENDPOINT=${{ secrets.NEON_STORAGE_ENDPOINT }}
+          SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+          INTERNAL_CRON_SECRET=${{ secrets.INTERNAL_CRON_SECRET }}
+          NEON_AUTH_JWKS_URL=${{ secrets.NEON_AUTH_JWKS_URL }}
+          NEON_AUTH_BASE_URL=${{ secrets.NEON_AUTH_BASE_URL }}
+          NEON_AI_GATEWAY_API_KEY=${{ secrets.NEON_AI_GATEWAY_API_KEY }}
+          EOF
+
+          # Deploy using neon.ts config
+          neon deploy --env .env.local --project-id "${NEON_PROJECT_ID}"
+
+          # Get function URLs
+          API_URL=$(neon functions get api --project-id "${NEON_PROJECT_ID}" --json | jq -r '.invocation_url')
+          WS_URL=$(neon functions get ws --project-id "${NEON_PROJECT_ID}" --json | jq -r '.invocation_url' | sed 's/https:/wss:/')
+
+          echo "api_url=${API_URL}" >> $GITHUB_OUTPUT
+          echo "ws_url=${WS_URL}" >> $GITHUB_OUTPUT
+
+      - name: Wait for functions to be ready
+        run: |
+          echo "Waiting for functions to be ready..."
+          sleep 10
+          # Health check
+          for i in {1..10}; do
+            if curl -sf "${{ steps.deploy-functions.outputs.api_url }}/health" > /dev/null; then
+              echo "API function is healthy"
+              break
+            fi
+            echo "Attempt $i: API not ready yet, waiting..."
+            sleep 5
+          done
+
+      - name: Run smoke tests against preview
+        run: |
+          # Run basic smoke tests against the preview deployment
+          API_URL="${{ steps.deploy-functions.outputs.api_url }}"
+
+          # Test health endpoint
+          curl -sf "${API_URL}/health" | jq -e '.success == true'
+
+          # Test metrics endpoint
+          curl -sf "${API_URL}/metrics" | grep -q 'http_requests_total'
+
+          echo "Smoke tests passed"
+
+      - name: Comment PR with preview URLs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { branch_name, api_url, ws_url } = require('${{ steps.preview-deploy.outputs }}');
+            const comment = `## 🚀 Preview Deployment Ready
+
+            **Branch:** \`${branch_name}\`
+            **API URL:** ${api_url}
+            **WebSocket URL:** ${ws_url}
+
+            ### Health Check
+            \`\`\`bash
+            curl ${api_url}/health
+            \`\`\`
+
+            ### WebSocket Connection
+            \`\`\`javascript
+            const ws = new WebSocket('${ws_url}/ws?token=<your-jwt>');
+            \`\`\`
+
+            *This preview will auto-expire in 7 days.*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  preview-teardown:
+    name: Teardown Preview Branch
+    if: github.event.pull_request.draft == false && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Neon CLI
+        run: npm install -g neonctl@latest
+
+      - name: Authenticate with Neon
+        run: neon auth --api-key "${NEON_API_KEY}"
+
+      - name: Delete Preview Branch
+        run: |
+          BRANCH_NAME="preview/pr-${{ github.event.pull_request.number }}"
+          echo "Deleting preview branch ${BRANCH_NAME}..."
+          neon branch delete "${BRANCH_NAME}" --project-id "${NEON_PROJECT_ID}" --force || true
+          echo "Preview branch deleted"

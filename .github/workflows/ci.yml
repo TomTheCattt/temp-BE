@@ -1,0 +1,368 @@
+name: CI - Lint, TypeCheck, Test, Contract, Security
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Run full test suite weekly on Sundays
+    - cron: '0 2 * * 0'
+
+env:
+  NODE_VERSION: "24"
+  NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+  PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL }}
+  PACT_BROKER_USERNAME: ${{ secrets.PACT_BROKER_USERNAME }}
+  PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+  typecheck:
+    name: TypeCheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Generate Drizzle schema
+        run: npm run drizzle:generate
+
+      - name: Run TypeScript compiler check
+        run: npx tsc --noEmit
+
+  test:
+    name: Unit & Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: instagram_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d instagram_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Generate Drizzle schema
+        run: npm run drizzle:generate
+
+      - name: Run database migrations
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/instagram_test
+
+      - name: Run unit tests
+        run: npm run test -- --run
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/instagram_test
+          NODE_ENV: test
+          BETTER_AUTH_SECRET: test-secret-for-ci
+          BETTER_AUTH_URL: http://localhost:3000
+          CORS_ORIGIN: http://localhost:3000
+          LOG_LEVEL: error
+
+      - name: Upload test coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+
+  security-audit:
+    name: Security Audit (npm audit, secrets scan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for secrets scan
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: |
+          npm audit --audit-level=high
+          if [ $? -ne 0 ]; then
+            echo "::warning::High severity vulnerabilities found"
+            npm audit --json > audit-report.json
+          fi
+
+      - name: Run OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        id: depcheck
+        with:
+          project: 'instagram-backend'
+          path: '.'
+          format: 'HTML'
+          out: 'reports'
+          args: >
+            --failOnCVSS 7
+            --suppression suppression.xml
+
+      - name: Upload Dependency Check Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports/
+          retention-days: 30
+
+      - name: Run GitLeaks (secrets scan)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --verbose --redact
+
+      - name: Run TruffleHog (secrets scan)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+
+  contract-test:
+    name: Contract Tests (Pact)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: instagram_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d instagram_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Generate Drizzle schema
+        run: npm run drizzle:generate
+
+      - name: Run database migrations
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/instagram_test
+
+      - name: Install Pact CLI
+        run: npm install -g @pact-foundation/pact-cli
+
+      - name: Start Pact Broker
+        run: |
+          docker run -d --name pact-broker \
+            -p 9292:9292 \
+            -e PACT_BROKER_DATABASE_URL=sqlite:///tmp/pact.db \
+            pactfoundation/pact-broker:latest
+          sleep 10
+          curl -f http://localhost:9292/health || exit 1
+
+      - name: Publish consumer contracts (from consumer CI)
+        run: |
+          # In real setup, consumer (iOS app) publishes contracts
+          # Here we simulate by copying local pacts
+          echo "Consumer contracts should be published from consumer CI pipeline"
+
+      - name: Run provider contract verification
+        run: npm run test:contract
+        env:
+          PACT_BROKER_URL: http://localhost:9292
+          PACT_BROKER_USERNAME: ${{ secrets.PACT_BROKER_USERNAME }}
+          PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
+          DATABASE_URL: postgresql://test:test@localhost:5432/instagram_test
+          NODE_ENV: test
+          BETTER_AUTH_SECRET: test-secret-for-ci
+          BETTER_AUTH_URL: http://localhost:3000
+          CORS_ORIGIN: http://localhost:3000
+          LOG_LEVEL: error
+
+      - name: Upload Pact verification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pact-verification-results
+          path: pacts/
+          retention-days: 7
+
+  contract-check:
+    name: Contract Check (Can I Deploy)
+    runs-on: ubuntu-latest
+    needs: [contract-test]
+    if: github.event_name != 'schedule'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Pact CLI
+        run: npm install -g @pact-foundation/pact-cli
+
+      - name: Check if provider can be deployed
+        run: |
+          pact-broker can-i-deploy \
+            --pacticipant=instagram-backend \
+            --version=${{ github.sha }} \
+            --broker-base-url=${{ secrets.PACT_BROKER_URL }} \
+            --broker-username=${{ secrets.PACT_BROKER_USERNAME }} \
+            --broker-password=${{ secrets.PACT_BROKER_PASSWORD }} \
+            --latest=true \
+            --retry-while-unknown=60 \
+            --retry-interval=10
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, test]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Generate Drizzle schema
+        run: npm run drizzle:generate
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  docker-build:
+    name: Docker Build & Scan
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: instagram-backend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'instagram-backend:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'HIGH,CRITICAL'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  notify:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, test, security-audit, contract-test, contract-check, build, docker-build]
+    if: failure()
+    steps:
+      - name: Send Slack notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          channel: '#ci-alerts'
+          text: "CI failed for ${{ github.repository }}@${{ github.sha }}"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        continue-on-error: true
