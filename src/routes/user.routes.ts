@@ -21,7 +21,7 @@ const profileAliasSchema = z.object({
 
 const deviceSchema = z.object({
   token: z.string().min(1).max(512),
-  platform: z.enum(["IOS", "ANDROID"]),
+  platform: z.enum(["IOS", "ANDROID", "WEB"]),
 });
 
 const tokenSchema = z.object({
@@ -48,6 +48,19 @@ const closeFriendsSchema = z.object({
 const paginationSchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   perPage: z.coerce.number().int().positive().max(50).default(20),
+});
+
+// Username change schema
+const usernameChangeSchema = z.object({
+  username: z.string().trim().min(1).max(30).regex(/^[a-zA-Z0-9._]+$/, "Username can only contain letters, numbers, underscores, and periods"),
+});
+
+// Verification request schema
+const verificationRequestSchema = z.object({
+  fullName: z.string().trim().min(1).max(100),
+  category: z.enum(["creator", "business", "public_figure", "media", "sports", "entertainment", "government", "other"]).optional(),
+  links: z.array(z.string().url()).max(5).optional(),
+  reason: z.string().trim().min(10).max(500).optional(),
 });
 
 // Helper function for pagination
@@ -146,7 +159,7 @@ userRouter.post("/me/device-token", zValidator("json", deviceSchema), async (c) 
     })
     .onConflictDoUpdate({
       target: schema.deviceTokens.token,
-      set: { platform, updatedAt: new Date(), expiresAt },
+      set: { platform, expiresAt },
     });
 
   return c.status(204);
@@ -230,72 +243,6 @@ userRouter.get("/search", zValidator("query", searchSchema), async (c) => {
       perPage,
       total: total[0]?.count || 0,
       hasMore: page * perPage < (total[0]?.count || 0),
-    },
-  });
-});
-
-// GET /v1/user/:id - Get user by ID (public profile)
-userRouter.get("/:id", async (c) => {
-  const currentUser = getCurrentUser(c);
-  const targetId = c.req.param("id");
-
-  const targetUser = await db.query.users.findFirst({
-    where: eq(schema.users.id, targetId),
-  });
-
-  if (!targetUser) {
-    throw new HTTPException(404, { message: "User not found" });
-  }
-
-  // Check if target user is private and current user isn't following
-  if (targetUser.isPrivate && targetId !== currentUser.id) {
-    const following = await db.query.follows.findFirst({
-      where: and(eq(schema.follows.followerId, currentUser.id), eq(schema.follows.followingId, targetId)),
-    });
-    if (!following) {
-      throw new HTTPException(403, { message: "This account is private" });
-    }
-  }
-
-  // Check if current user is following target
-  const following = await db.query.follows.findFirst({
-    where: and(eq(schema.follows.followerId, currentUser.id), eq(schema.follows.followingId, targetId)),
-  });
-
-  // Check if current user has blocked target or vice versa
-  const isBlocked = await db.query.blocks.findFirst({
-    where: and(
-      eq(schema.blocks.blockerId, currentUser.id),
-      eq(schema.blocks.blockedId, targetId)
-    ),
-  });
-
-  const hasBlocked = await db.query.blocks.findFirst({
-    where: and(
-      eq(schema.blocks.blockerId, targetId),
-      eq(schema.blocks.blockedId, currentUser.id)
-    ),
-  });
-
-  return c.json({
-    success: true,
-    data: {
-      user: {
-        id: targetUser.id,
-        username: targetUser.username,
-        fullName: targetUser.fullName,
-        avatarUrl: targetUser.avatarUrl,
-        bio: targetUser.bio,
-        website: targetUser.website,
-        isVerified: targetUser.isVerified,
-        isPrivate: targetUser.isPrivate,
-        postsCount: targetUser.postsCount,
-        followersCount: targetUser.followersCount,
-        followingCount: targetUser.followingCount,
-        createdAt: targetUser.createdAt,
-        isFollowing: !!following,
-        isBlocked: !!isBlocked || !!hasBlocked,
-      },
     },
   });
 });
@@ -424,25 +371,12 @@ userRouter.put("/profile", zValidator("json", profileAliasSchema), async (c) => 
   });
 });
 
-// User Settings
+// User Settings (stored in users.settings JSONB column)
 // GET /v1/user/settings
 userRouter.get("/settings", async (c) => {
   const user = getCurrentUser(c);
 
-  const settings = await db.query.userSettings.findFirst({
-    where: eq(schema.userSettings.userId, user.id),
-  });
-
-  if (!settings) {
-    // Create default settings
-    const [newSettings] = await db
-      .insert(schema.userSettings)
-      .values({ userId: user.id })
-      .returning();
-    return c.json({ success: true, data: { settings: newSettings } });
-  }
-
-  return c.json({ success: true, data: { settings } });
+  return c.json({ success: true, data: { settings: user.settings } });
 });
 
 // PUT /v1/user/settings
@@ -450,16 +384,20 @@ userRouter.put("/settings", zValidator("json", userSettingsSchema), async (c) =>
   const user = getCurrentUser(c);
   const data = c.req.valid("json");
 
+  // Merge with existing settings
+  const currentSettings = (user.settings as Record<string, unknown>) || {};
+  const updatedSettings = { ...currentSettings, ...data };
+
   const [updated] = await db
-    .insert(schema.userSettings)
-    .values({ userId: user.id, ...data, updatedAt: new Date() })
-    .onConflictDoUpdate({
-      target: schema.userSettings.userId,
-      set: { ...data, updatedAt: new Date() },
+    .update(schema.users)
+    .set({
+      settings: updatedSettings,
+      updatedAt: new Date(),
     })
+    .where(eq(schema.users.id, user.id))
     .returning();
 
-  return c.json({ success: true, data: { settings: updated } });
+  return c.json({ success: true, data: { settings: updated.settings } });
 });
 
 // Blocked users
@@ -541,6 +479,349 @@ userRouter.put("/me/close-friends", zValidator("json", closeFriendsSchema), asyn
       }))
     );
   }
+
+  return c.status(204);
+});
+
+// ============================================
+// ACCOUNT MANAGEMENT (GDPR, Username, Verification)
+// ============================================
+
+// DELETE /v1/user/me - GDPR Account Deletion (soft delete)
+userRouter.delete("/me", async (c) => {
+  const user = getCurrentUser(c);
+
+  // Soft delete - set deleted_at timestamp
+  await db
+    .update(schema.users)
+    .set({
+      deletedAt: new Date(),
+      // Anonymize personal data per GDPR
+      email: `deleted_${user.id}@deleted.local`,
+      phone: null,
+      fullName: "Deleted User",
+      bio: "",
+      website: null,
+      avatarUrl: null,
+      avatarThumbUrl: null,
+      username: `deleted_${user.id.slice(0, 8)}`,
+      isPrivate: true,
+      settings: {
+        language: "en",
+        dark_mode: false,
+        push_enabled: false,
+        biometric_enabled: false,
+        story_controls: { allow_replies: "none", allow_sharing: false },
+        comment_controls: { allow_comments_from: "none", block_keywords: [] },
+        privacy: { activity_status: false, read_receipts: false },
+      },
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.users.id, user.id));
+
+  // Revoke all sessions
+  await db.delete(schema.sessions).where(eq(schema.sessions.userId, user.id));
+  await db.delete(schema.refreshTokens).where(eq(schema.refreshTokens.userId, user.id));
+  await db.delete(schema.deviceTokens).where(eq(schema.deviceTokens.userId, user.id));
+
+  // Log audit event
+  await db.insert(schema.auditLogs).values({
+    actorId: user.id,
+    action: "user.delete_account",
+    resourceType: "user",
+    resourceId: user.id,
+    oldValues: { username: user.username, email: user.email },
+    newValues: { deleted: true },
+    metadata: { gdpr_compliant: true },
+  });
+
+  return c.status(204);
+});
+
+// PATCH /v1/user/me/username - Change username with history tracking
+userRouter.patch("/me/username", zValidator("json", usernameChangeSchema), async (c) => {
+  const user = getCurrentUser(c);
+  const { username: newUsername } = c.req.valid("json");
+
+  // Check if username is already taken
+  const existing = await db.query.users.findFirst({
+    where: eq(schema.users.username, newUsername),
+  });
+
+  if (existing && existing.id !== user.id) {
+    throw new HTTPException(409, {
+      message: "Username already taken",
+      res: c.json({ success: false, error: "USERNAME_TAKEN", message: "Username already taken" }),
+    });
+  }
+
+  const oldUsername = user.username;
+
+  // Update username
+  const [updated] = await db
+    .update(schema.users)
+    .set({
+      username: newUsername,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.users.id, user.id))
+    .returning();
+
+  // Log username change in audit log
+  await db.insert(schema.auditLogs).values({
+    actorId: user.id,
+    action: "user.change_username",
+    resourceType: "user",
+    resourceId: user.id,
+    oldValues: { username: oldUsername },
+    newValues: { username: newUsername },
+  });
+
+  return c.json({
+    success: true,
+    data: {
+      user: {
+        id: updated.id,
+        username: updated.username,
+        fullName: updated.fullName,
+        email: updated.email,
+        phone: updated.phone,
+        avatarUrl: updated.avatarUrl,
+        bio: updated.bio,
+        website: updated.website,
+        isVerified: updated.isVerified,
+        isPrivate: updated.isPrivate,
+        postsCount: updated.postsCount,
+        followersCount: updated.followersCount,
+        followingCount: updated.followingCount,
+        createdAt: updated.createdAt,
+      },
+    },
+  });
+});
+
+// POST /v1/user/me/verification-request - Request verification badge
+userRouter.post("/me/verification-request", zValidator("json", verificationRequestSchema), async (c) => {
+  const user = getCurrentUser(c);
+  const data = c.req.valid("json");
+
+  // Check if already verified
+  if (user.isVerified) {
+    throw new HTTPException(400, {
+      message: "Account is already verified",
+      res: c.json({ success: false, error: "ALREADY_VERIFIED", message: "Account is already verified" }),
+    });
+  }
+
+  // Check for pending verification request (using audit logs)
+  const pendingRequest = await db.query.auditLogs.findFirst({
+    where: and(
+      eq(schema.auditLogs.actorId, user.id),
+      eq(schema.auditLogs.action, "user.request_verification"),
+      // Check if request is less than 30 days old
+      // Note: In production, you'd want a dedicated verification_requests table
+    ),
+    orderBy: desc(schema.auditLogs.createdAt),
+  });
+
+  if (pendingRequest && new Date(pendingRequest.createdAt).getTime() > Date.now() - 30 * 24 * 60 * 60 * 1000) {
+    throw new HTTPException(400, {
+      message: "Verification request already pending. Please wait for review.",
+      res: c.json({ success: false, error: "PENDING_REQUEST", message: "Verification request already pending" }),
+    });
+  }
+
+  // Create verification request record in audit log
+  await db.insert(schema.auditLogs).values({
+    actorId: user.id,
+    action: "user.request_verification",
+    resourceType: "user",
+    resourceId: user.id,
+    newValues: {
+      fullName: data.fullName,
+      category: data.category,
+      links: data.links,
+      reason: data.reason,
+      requestedAt: new Date().toISOString(),
+    },
+  });
+
+  // In a real implementation, you'd notify the moderation team
+  // For now, we'll just return success
+
+  return c.json({
+    success: true,
+    data: {
+      message: "Verification request submitted successfully. Our team will review within 5-7 business days.",
+      status: "pending_review",
+    },
+  });
+});
+
+// GET /v1/user/me/verification-status - Check verification status
+userRouter.get("/me/verification-status", async (c) => {
+  const user = getCurrentUser(c);
+
+  // Get latest verification request from audit logs
+  const latestRequest = await db.query.auditLogs.findFirst({
+    where: and(
+      eq(schema.auditLogs.actorId, user.id),
+      eq(schema.auditLogs.action, "user.request_verification"),
+    ),
+    orderBy: desc(schema.auditLogs.createdAt),
+  });
+
+  return c.json({
+    success: true,
+    data: {
+      isVerified: user.isVerified,
+      verificationStatus: user.isVerified ? "verified" : (latestRequest ? "pending_review" : "not_requested"),
+      requestedAt: latestRequest?.createdAt || null,
+    },
+  });
+});
+
+// ============================================
+// RESTRICT / UNRESTRICT USER
+// ============================================
+
+// POST /v1/users/:id/restrict - Restrict user
+userRouter.post("/:id/restrict", async (c) => {
+  const user = getCurrentUser(c);
+  const targetId = c.req.param("id");
+
+  if (user.id === targetId) {
+    throw new HTTPException(400, {
+      message: "Cannot restrict yourself",
+      res: c.json({ success: false, error: "SELF_RESTRICT", message: "Cannot restrict yourself" }),
+    });
+  }
+
+  const targetUser = await db.query.users.findFirst({
+    where: eq(schema.users.id, targetId),
+    columns: { id: true },
+  });
+
+  if (!targetUser) {
+    throw new HTTPException(404, {
+      message: "User not found",
+      res: c.json({ success: false, error: "NOT_FOUND", message: "User not found" }),
+    });
+  }
+
+  // Check if already restricted
+  const existing = await db.query.restrictions.findFirst({
+    where: and(eq(schema.restrictions.restrictorId, user.id), eq(schema.restrictions.restrictedId, targetId)),
+  });
+
+  if (existing) {
+    throw new HTTPException(409, {
+      message: "Already restricting this user",
+      res: c.json({ success: false, error: "ALREADY_RESTRICTED", message: "Already restricting this user" }),
+    });
+  }
+
+  // Create restriction
+  await db.insert(schema.restrictions).values({
+    restrictorId: user.id,
+    restrictedId: targetId,
+  });
+
+  // Log audit event
+  await db.insert(schema.auditLogs).values({
+    actorId: user.id,
+    action: "user.restrict",
+    resourceType: "user",
+    resourceId: targetId,
+  });
+
+  return c.status(204);
+});
+
+// DELETE /v1/users/:id/restrict - Unrestrict user
+userRouter.delete("/:id/restrict", async (c) => {
+  const user = getCurrentUser(c);
+  const targetId = c.req.param("id");
+
+  const result = await db
+    .delete(schema.restrictions)
+    .where(and(eq(schema.restrictions.restrictorId, user.id), eq(schema.restrictions.restrictedId, targetId)))
+    .returning({ id: schema.restrictions.id });
+
+  if (result.length === 0) {
+    throw new HTTPException(404, {
+      message: "Not restricting this user",
+      res: c.json({ success: false, error: "NOT_RESTRICTED", message: "Not restricting this user" }),
+    });
+  }
+
+  // Log audit event
+  await db.insert(schema.auditLogs).values({
+    actorId: user.id,
+    action: "user.unrestrict",
+    resourceType: "user",
+    resourceId: targetId,
+  });
+
+  return c.status(204);
+});
+
+// ============================================
+// ACCEPT FOLLOW REQUEST (for private accounts)
+// ============================================
+
+// POST /v1/users/:id/accept - Accept follow request
+userRouter.post("/:id/accept", async (c) => {
+  const user = getCurrentUser(c);
+  const requesterId = c.req.param("id");
+
+  // Check if there's a pending follow request from this user
+  const pendingFollow = await db.query.follows.findFirst({
+    where: and(
+      eq(schema.follows.followerId, requesterId),
+      eq(schema.follows.followingId, user.id),
+      eq(schema.follows.status, "PENDING")
+    ),
+  });
+
+  if (!pendingFollow) {
+    throw new HTTPException(404, {
+      message: "No pending follow request from this user",
+      res: c.json({ success: false, error: "NO_PENDING_REQUEST", message: "No pending follow request from this user" }),
+    });
+  }
+
+  // Update follow status to ACCEPTED
+  await db
+    .update(schema.follows)
+    .set({ status: "ACCEPTED" })
+    .where(and(eq(schema.follows.followerId, requesterId), eq(schema.follows.followingId, user.id)));
+
+  // Update counters
+  await db
+    .update(schema.users)
+    .set({
+      followersCount: sql`${schema.users.followersCount} + 1`,
+    })
+    .where(eq(schema.users.id, user.id));
+
+  await db
+    .update(schema.users)
+    .set({
+      followingCount: sql`${schema.users.followingCount} + 1`,
+    })
+    .where(eq(schema.users.id, requesterId));
+
+  // Log audit event
+  await db.insert(schema.auditLogs).values({
+    actorId: user.id,
+    action: "user.accept_follow_request",
+    resourceType: "follow",
+    resourceId: pendingFollow.id,
+    newValues: { requesterId, status: "ACCEPTED" },
+  });
+
+  // TODO: Send notification to requester (follow_accept)
 
   return c.status(204);
 });
