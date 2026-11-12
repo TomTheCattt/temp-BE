@@ -6,6 +6,8 @@
 > **Response Format:** `{ success: true, data: {...} }` or `{ success: false, error: "CODE", message: "..." }`
 >
 > **Auth Model:** Better Auth (via Neon Auth) with **bcrypt** password hashing (cost 10). Sessions stored in database with 7-day sliding expiry. Token verification via database session lookup. Email verification disabled for dev.
+>
+> ⚠️ **CRITICAL:** All user endpoints use **singular** `/v1/user/...` NOT plural `/v1/users/...`. See [Migration Guide](#migration-guide---fe-team) for common mistakes.
 
 ---
 
@@ -263,11 +265,12 @@ Protected by `INTERNAL_CRON_SECRET` (Bearer token). Called by Neon Functions cro
 
 ---
 
-## Health Check
+## Health Check & Metrics
 
 | Method | Endpoint | Auth | Response |
 |--------|----------|------|----------|
 | GET | `/health` | ❌ | `{ status: "ok", timestamp: string }` |
+| GET | `/metrics` | ❌ | Prometheus metrics (text/plain) |
 
 ---
 

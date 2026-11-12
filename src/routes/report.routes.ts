@@ -7,18 +7,24 @@ import * as schema from "../db/schema";
 import { eq, and, desc, asc, count, sql, inArray, not, isNull } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 
+// Schema enums (matching database):
+// reportTypeEnum: "USER" | "POST" | "REEL" | "STORY" | "COMMENT" | "MESSAGE" | "AUDIO"
+// reportReasonEnum: "SPAM" | "HATE_SPEECH" | "HARASSMENT" | "VIOLENCE" | "NUDITY" | "SELF_HARM" | "MISINFORMATION" | "SCAM" | "IMPERSONATION" | "COPYRIGHT" | "OTHER"
+// reportStatusEnum: "PENDING" | "REVIEWING" | "RESOLVED" | "DISMISSED"
+
 const createReportSchema = z.object({
-  type: z.enum(["POST", "COMMENT", "REEL", "STORY", "USER", "MESSAGE"]),
+  type: z.enum(["POST", "COMMENT", "REEL", "STORY", "USER", "MESSAGE", "AUDIO"]),
   reason: z.enum([
     "SPAM",
-    "INAPPROPRIATE_CONTENT",
-    "HARASSMENT",
     "HATE_SPEECH",
+    "HARASSMENT",
     "VIOLENCE",
-    "SEXUAL_CONTENT",
+    "NUDITY",
     "SELF_HARM",
-    "FAKE_ACCOUNT",
-    "INTELLECTUAL_PROPERTY",
+    "MISINFORMATION",
+    "SCAM",
+    "IMPERSONATION",
+    "COPYRIGHT",
     "OTHER",
   ]),
   description: z.string().max(1000).optional(),
@@ -28,13 +34,14 @@ const createReportSchema = z.object({
   storyId: z.string().uuid().optional(),
   userId: z.string().uuid().optional(),
   messageId: z.string().uuid().optional(),
+  audioId: z.string().uuid().optional(),
 });
 
 const reportQuerySchema = z.object({
   page: z.coerce.number().min(1).default(1),
   perPage: z.coerce.number().min(1).max(50).default(20),
-  status: z.enum(["PENDING", "REVIEWED", "RESOLVED", "DISMISSED"]).optional(),
-  type: z.enum(["POST", "COMMENT", "REEL", "STORY", "USER", "MESSAGE"]).optional(),
+  status: z.enum(["PENDING", "REVIEWING", "RESOLVED", "DISMISSED"]).optional(),
+  type: z.enum(["POST", "COMMENT", "REEL", "STORY", "USER", "MESSAGE", "AUDIO"]).optional(),
 });
 
 function getPagination(c: any) {
@@ -49,10 +56,10 @@ reportRouter.use("*", authMiddleware);
 // POST /v1/reports - Create a report
 reportRouter.post("/", zValidator("json", createReportSchema), async (c) => {
   const user = getCurrentUser(c);
-  const { type, reason, description, postId, commentId, reelId, storyId, userId, messageId } = c.req.valid("json");
+  const { type, reason, description, postId, commentId, reelId, storyId, userId, messageId, audioId } = c.req.valid("json");
 
   // Validate that exactly one target ID is provided based on type
-  const targetIds = { postId, commentId, reelId, storyId, userId, messageId };
+  const targetIds = { postId, commentId, reelId, storyId, userId, messageId, audioId };
   const providedTargets = Object.entries(targetIds).filter(([_, v]) => v !== undefined);
 
   if (providedTargets.length !== 1) {
@@ -67,6 +74,7 @@ reportRouter.post("/", zValidator("json", createReportSchema), async (c) => {
     storyId: "STORY",
     userId: "USER",
     messageId: "MESSAGE",
+    audioId: "AUDIO",
   };
 
   if (expectedTypeMap[targetType] !== type) {
@@ -94,6 +102,9 @@ reportRouter.post("/", zValidator("json", createReportSchema), async (c) => {
     case "MESSAGE":
       targetExists = !!(await db.query.messages.findFirst({ where: eq(schema.messages.id, messageId!), columns: { id: true } }));
       break;
+    case "AUDIO":
+      targetExists = !!(await db.query.audioTracks.findFirst({ where: eq(schema.audioTracks.id, audioId!), columns: { id: true } }));
+      break;
   }
 
   if (!targetExists) {
@@ -109,7 +120,8 @@ reportRouter.post("/", zValidator("json", createReportSchema), async (c) => {
   const existingReport = await db.query.reports.findFirst({
     where: and(
       eq(schema.reports.reporterId, user.id),
-      ...Object.entries(targetIds).map(([k, v]) => v ? eq(schema.reports[k as keyof typeof schema.reports.$inferSelect], v) : sql`${schema.reports[k as keyof typeof schema.reports.$inferSelect]} IS NULL`)
+      eq(schema.reports.reportedType, type),
+      eq(schema.reports.reportedId, targetId!)
     ),
   });
 
@@ -121,15 +133,10 @@ reportRouter.post("/", zValidator("json", createReportSchema), async (c) => {
     .insert(schema.reports)
     .values({
       reporterId: user.id,
-      type,
+      reportedType: type,
+      reportedId: targetId!,
       reason,
       description,
-      postId,
-      commentId,
-      reelId,
-      storyId,
-      userId,
-      messageId,
     })
     .returning();
 
@@ -143,32 +150,26 @@ reportRouter.post("/", zValidator("json", createReportSchema), async (c) => {
 reportRouter.get("/my", async (c) => {
   const user = getCurrentUser(c);
   const { page, perPage, offset } = getPagination(c);
-  const status = c.req.query("status") as "PENDING" | "REVIEWED" | "RESOLVED" | "DISMISSED" | undefined;
-  const type = c.req.query("type") as "POST" | "COMMENT" | "REEL" | "STORY" | "USER" | "MESSAGE" | undefined;
+  const status = c.req.query("status") as "PENDING" | "REVIEWING" | "RESOLVED" | "DISMISSED" | undefined;
+  const type = c.req.query("type") as "POST" | "COMMENT" | "REEL" | "STORY" | "USER" | "MESSAGE" | "AUDIO" | undefined;
 
   const conditions = [eq(schema.reports.reporterId, user.id)];
   if (status) conditions.push(eq(schema.reports.status, status));
-  if (type) conditions.push(eq(schema.reports.type, type));
+  if (type) conditions.push(eq(schema.reports.reportedType, type));
 
   const [reportsList, total] = await Promise.all([
     db
       .select({
         id: schema.reports.id,
-        type: schema.reports.type,
+        reportedType: schema.reports.reportedType,
+        reportedId: schema.reports.reportedId,
         reason: schema.reports.reason,
         description: schema.reports.description,
-        postId: schema.reports.postId,
-        commentId: schema.reports.commentId,
-        reelId: schema.reports.reelId,
-        storyId: schema.reports.storyId,
-        userId: schema.reports.userId,
-        messageId: schema.reports.messageId,
         status: schema.reports.status,
-        reviewedBy: schema.reports.reviewedBy,
-        reviewedAt: schema.reports.reviewedAt,
+        resolvedBy: schema.reports.resolvedBy,
+        resolvedAt: schema.reports.resolvedAt,
         resolution: schema.reports.resolution,
         createdAt: schema.reports.createdAt,
-        updatedAt: schema.reports.updatedAt,
       })
       .from(schema.reports)
       .where(and(...conditions))
@@ -218,33 +219,27 @@ reportRouter.get("/:id", async (c) => {
 reportRouter.get("/", async (c) => {
   const user = getCurrentUser(c);
   const { page, perPage, offset } = getPagination(c);
-  const status = c.req.query("status") as "PENDING" | "REVIEWED" | "RESOLVED" | "DISMISSED" | undefined;
-  const type = c.req.query("type") as "POST" | "COMMENT" | "REEL" | "STORY" | "USER" | "MESSAGE" | undefined;
+  const status = c.req.query("status") as "PENDING" | "REVIEWING" | "RESOLVED" | "DISMISSED" | undefined;
+  const type = c.req.query("type") as "POST" | "COMMENT" | "REEL" | "STORY" | "USER" | "MESSAGE" | "AUDIO" | undefined;
 
   const conditions = [];
   if (status) conditions.push(eq(schema.reports.status, status));
-  if (type) conditions.push(eq(schema.reports.type, type));
+  if (type) conditions.push(eq(schema.reports.reportedType, type));
 
   const [reportsList, total] = await Promise.all([
     db
       .select({
         id: schema.reports.id,
         reporterId: schema.reports.reporterId,
-        type: schema.reports.type,
+        reportedType: schema.reports.reportedType,
+        reportedId: schema.reports.reportedId,
         reason: schema.reports.reason,
         description: schema.reports.description,
-        postId: schema.reports.postId,
-        commentId: schema.reports.commentId,
-        reelId: schema.reports.reelId,
-        storyId: schema.reports.storyId,
-        userId: schema.reports.userId,
-        messageId: schema.reports.messageId,
         status: schema.reports.status,
-        reviewedBy: schema.reports.reviewedBy,
-        reviewedAt: schema.reports.reviewedAt,
+        resolvedBy: schema.reports.resolvedBy,
+        resolvedAt: schema.reports.resolvedAt,
         resolution: schema.reports.resolution,
         createdAt: schema.reports.createdAt,
-        updatedAt: schema.reports.updatedAt,
         reporter: {
           id: schema.users.id,
           username: schema.users.username,
@@ -277,7 +272,7 @@ reportRouter.get("/", async (c) => {
 reportRouter.put(
   "/:id",
   zValidator("json", z.object({
-    status: z.enum(["PENDING", "REVIEWED", "RESOLVED", "DISMISSED"]),
+    status: z.enum(["PENDING", "REVIEWING", "RESOLVED", "DISMISSED"]),
     resolution: z.string().max(2000).optional(),
   })),
   async (c) => {
@@ -295,10 +290,9 @@ reportRouter.put(
       .update(schema.reports)
       .set({
         status,
-        reviewedBy: user.id,
-        reviewedAt: new Date(),
+        resolvedBy: user.id,
+        resolvedAt: new Date(),
         resolution,
-        updatedAt: new Date(),
       })
       .where(eq(schema.reports.id, reportId))
       .returning();

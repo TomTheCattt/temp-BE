@@ -1,9 +1,9 @@
 # Backend System Design — Instagram Clone (Production Ready)
 
-> **Updated:** 2026-11-05  
+> **Updated:** 2026-11-10  
 > **Status:** Migrated to Hono + Drizzle ORM + Better Auth + Neon Functions  
 > **Tech Stack:** Node.js 20 LTS + Hono + TypeScript + PostgreSQL 16 + Drizzle ORM + Better Auth + Neon Functions + Neon Realtime + Neon Object Storage  
-> **Auth Model:** Better Auth (via Neon Auth) handles entire token lifecycle. JWT tokens verified via JWKS endpoint. Sessions stored in database. Password reset, email verification built-in.
+> **Auth Model:** Better Auth handles entire token lifecycle. **Opaque session tokens verified via database session lookup** (not JWT/JWKS). Sessions stored in database with 7-day sliding expiry. Password reset, email verification built-in. bcrypt password hashing (cost 10).
 
 ---
 
@@ -78,7 +78,7 @@ Both share the **same PostgreSQL schema** (defined in both `prisma/schema.prisma
 | ORM (Neon) | Drizzle ORM | 0.45.x | Type-safe SQL, fast, lightweight |
 | ORM (Legacy) | Prisma | 5.x | Migrations, Prisma Studio |
 | Database | PostgreSQL | 16 | Relational, JSONB, full-text search |
-| Auth | Better Auth | 1.x | Email/password, sessions, JWT, JWKS |
+| Auth | Better Auth | 1.x | Email/password, sessions, opaque tokens, database lookup |
 | Auth Provider | Neon Auth | Managed | Better Auth on Neon infrastructure |
 | Storage | Neon Object Storage | S3-compatible | Branching file storage |
 | Realtime | Neon Realtime | - | Live SQL queries for chat/notifications |
@@ -113,16 +113,17 @@ instagram-backend/
 │   │   ├── auth.ts            # Better Auth instance configuration
 │   │   └── env.ts             # Environment validation (if needed)
 │   ├── middleware/
-│   │   └── auth.ts            # Better Auth JWT verification via JWKS
+│   │   └── auth.ts            # Better Auth session verification via database lookup
 │   ├── routes/
 │   │   ├── auth.routes.ts     # Better Auth endpoints + custom register/login
-│   │   ├── user.routes.ts     # Profile, settings, social graph, close friends
-│   │   ├── post.routes.ts     # Posts CRUD, likes, saves, feeds
-│   │   ├── reel.routes.ts     # Reels (TODO: migrate to Hono)
-│   │   ├── story.routes.ts    # Stories (TODO: migrate to Hono)
-│   │   ├── conversation.routes.ts # Chat (TODO: migrate to Hono)
-│   │   ├── notification.routes.ts # Notifications (TODO: migrate to Hono)
-│   │   └── upload.routes.ts   # Uploads (TODO: migrate to Hono)
+│   │   ├── user.routes.ts     # Profile, settings, social graph, close friends, blocks
+│   │   ├── post.routes.ts     # Posts CRUD, likes, saves, feeds, comments
+│   │   ├── reel.routes.ts     # Reels CRUD, likes, saves, views, comments
+│   │   ├── story.routes.ts    # Stories CRUD, views, stickers, comments
+│   │   ├── conversation.routes.ts # Chat CRUD, messages, mute, read receipts
+│   │   ├── notification.routes.ts # Notifications list, read, triggers
+│   │   ├── report.routes.ts   # Content moderation reports
+│   │   └── upload.routes.ts   # Neon Object Storage uploads
 │   ├── websocket/
 │   │   ├── index.ts           # Neon Function entry point (ws function)
 │   │   └── server.ts          # Legacy Express WebSocket server
@@ -256,9 +257,10 @@ Defined in `src/db/schema.ts` with full relations.
 
 ### Better Auth Tables (Auto-managed)
 
-- `sessions` - Active sessions with JWT tokens
+- `sessions` - Active sessions with opaque tokens (verified via database lookup)
 - `accounts` - Linked OAuth accounts
 - `verifications` - Email verification tokens
+- `refresh_tokens` - Refresh token rotation with SHA-256 hashing (30-day expiry)
 
 ---
 
@@ -269,28 +271,34 @@ Defined in `src/db/schema.ts` with full relations.
 | Aspect | Configuration |
 |--------|---------------|
 | **Provider** | Better Auth (via Neon Auth - Managed) |
-| **Password Hashing** | scrypt (`N=16384, r=16, p=1, dkLen=64`) — Better Auth defaults |
+| **Password Hashing** | **bcrypt (cost 10)** — matches seeded password hashes |
 | **Session Storage** | PostgreSQL `sessions` table |
-| **Token Format** | JWT with 7-day expiry |
-| **Token Verification** | JWKS endpoint at `{BETTER_AUTH_URL}/.well-known/jwks.json` |
+| **Token Format** | **Opaque session tokens** (not JWT) |
+| **Token Verification** | **Database session lookup** (not JWKS) |
+| **Refresh Tokens** | Separate table with SHA-256 hashing, 30-day expiry, rotation |
 | **Email Verification** | Disabled for development (`requireEmailVerification: false`) |
 | **Rate Limiting** | 100 req/min for auth endpoints |
 
 ### Token Verification
 
-JWT tokens verified via JWKS endpoint:
-```
-GET {BETTER_AUTH_URL}/.well-known/jwks.json
-```
+Session tokens are **opaque** and verified via **database lookup** in `sessions` table:
 
 Middleware (`src/middleware/auth.ts`):
 ```typescript
-const jwks = createRemoteJWKSet(new URL(`${BETTER_AUTH_URL}/.well-known/jwks.json`));
-const { payload } = await jwtVerify(token, jwks, {
-  issuer: BETTER_AUTH_URL,
-  audience: "instagram-clone",
+const sessionRecord = await db.query.sessions.findFirst({
+  where: and(
+    eq(schema.sessions.token, token),
+    gt(schema.sessions.expiresAt, new Date())
+  ),
 });
+
+if (!sessionRecord) {
+  throw new HTTPException(401, { message: "Invalid or expired session" });
+}
+// Attach user and session to context
 ```
+
+WebSocket function (`src/websocket/index.ts`) also uses database lookup during handshake.
 
 ### Auth Endpoints
 
@@ -318,9 +326,10 @@ const { payload } = await jwtVerify(token, jwks, {
 ### Session Management
 
 - Sessions stored in `sessions` table
-- JWT tokens with 7-day expiry
-- Automatic token refresh via Better Auth
+- **Opaque session tokens with 7-day sliding expiry** (not JWT)
+- Automatic session refresh via Better Auth (sliding window)
 - `revokeOtherSessions` on password change
+- **Refresh tokens** in `refresh_tokens` table with SHA-256 hashing, 30-day expiry, rotation
 
 ---
 
@@ -367,14 +376,19 @@ Exports default `fetch` handler for Neon Functions runtime.
 ### Connection
 
 ```
-wss://<branch>-<project>.neonfunctions.app/ws?token=<session_token>
+wss://<branch>-<project>.neonfunctions.app/ws
 ```
+
+**Token Transmission (in order of preference):**
+1. **Authorization header:** `Authorization: Bearer <session_token>`
+2. **Sec-WebSocket-Protocol header:** `Sec-WebSocket-Protocol: bearer.<session_token>`
+3. **Query parameter (legacy):** `?token=<session_token>`
 
 ### Features
 
 | Feature | Implementation |
 |---------|----------------|
-| **Auth** | Better Auth token verified via JWKS on first message |
+| **Auth** | **Token verified via database session lookup BEFORE upgrade** (not JWKS) |
 | **Heartbeat** | 30s ping/pong, 30s offline debounce |
 | **Presence** | Broadcasts `user_online`/`user_offline` to followers |
 | **Chat** | `send_message`, `typing_start/stop`, `mark_read`, `delete_message` |
@@ -515,7 +529,7 @@ The following security measures are implemented across the stack:
 
 | Measure | Implementation |
 |---------|----------------|
-| **Auth on Upgrade** | JWKS verification during handshake (not deferred to first message) |
+| **Auth on Upgrade** | **Database session lookup during handshake** (not deferred, not JWKS) |
 | **Message Size Limit** | 16KB max message size |
 | **Heartbeat Jitter** | 30s ping/pong with random jitter to prevent timing attacks |
 

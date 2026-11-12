@@ -9,6 +9,7 @@ import { HTTPException } from "hono/http-exception";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "crypto";
+import { tusService, TusUploadMetadata } from "../services/tus-service";
 
 // Magic bytes for file type validation
 const MAGIC_BYTES: Record<string, number[][]> = {
@@ -362,6 +363,238 @@ uploadRouter.post("/avatar", async (c) => {
     .onConflictDoNothing();
 
   return c.json({ success: true, data: { url: avatarUrl } });
+});
+
+// ============================================================================
+// TUS Protocol Integration
+// ============================================================================
+
+// POST /v1/upload/tus/init - Initialize a TUS resumable upload
+// Alternative to presigned URL for large files (>50MB) or unreliable networks
+const tusInitSchema = z.object({
+  fileSize: z.number().positive().max(500 * 1024 * 1024), // max 500MB
+  filename: z.string().min(1).max(255),
+  filetype: z.string().regex(/^(image|video|audio)\//),
+  targetType: z.enum(["post", "reel", "story", "avatar", "message"]),
+  targetId: z.string().uuid().optional(),
+  checksum: z.string().optional(),
+});
+
+uploadRouter.post("/tus/init", zValidator("json", tusInitSchema), async (c) => {
+  const user = getCurrentUser(c);
+  const { fileSize, filename, filetype, targetType, targetId, checksum } = c.req.valid("json");
+
+  // Validate file size against limits
+  const maxSizes: Record<string, number> = {
+    image: 50 * 1024 * 1024,   // 50MB for images
+    video: 500 * 1024 * 1024,  // 500MB for videos
+    audio: 100 * 1024 * 1024,  // 100MB for audio
+  };
+
+  const mediaType = filetype.split("/")[0];
+  const maxSize = maxSizes[mediaType] || 50 * 1024 * 1024;
+
+  if (fileSize > maxSize) {
+    throw new HTTPException(400, { message: `File size exceeds maximum for ${mediaType}: ${maxSize} bytes` });
+  }
+
+  // Create TUS upload
+  const metadata: TusUploadMetadata = {
+    filename,
+    filetype,
+    targetType,
+    targetId: targetId || "",
+    userId: user.id,
+    fileSize,
+    checksum,
+  };
+
+  const uploadInfo = await tusService.createUpload({ fileSize, metadata });
+
+  return c.json({
+    success: true,
+    data: {
+      uploadId: uploadInfo.id,
+      uploadUrl: uploadInfo.uploadUrl,
+      tusUrl: `/v1/upload/tus/${uploadInfo.id}`, // Full TUS endpoint
+      expiresAt: uploadInfo.expiresAt.toISOString(),
+      maxSize: 500 * 1024 * 1024,
+      chunkSize: 5 * 1024 * 1024, // Recommended chunk size
+    },
+  });
+});
+
+// GET /v1/upload/tus/:id/status - Get TUS upload status
+uploadRouter.get("/tus/:id/status", async (c) => {
+  const user = getCurrentUser(c);
+  const uploadId = c.req.param("id");
+
+  const uploadInfo = await tusService.getUploadStatus(uploadId);
+
+  if (!uploadInfo || uploadInfo.metadata.userId !== user.id) {
+    throw new HTTPException(404, { message: "Upload not found" });
+  }
+
+  const isComplete = uploadInfo.status === "completed";
+  let finalUrl = null;
+  let mediaItem = null;
+
+  if (isComplete) {
+    // Get the final URL from processing job result
+    const processingJob = await db.query.processingJobs.findFirst({
+      where: eq(schema.processingJobs.uploadId, uploadId),
+      orderBy: desc(schema.processingJobs.createdAt),
+    });
+
+    if (processingJob?.result) {
+      const result = processingJob.result as any;
+      finalUrl = result.finalUrl || result.url;
+      mediaItem = result.mediaItem;
+    }
+  }
+
+  return c.json({
+    success: true,
+    data: {
+      uploadId: uploadInfo.id,
+      uploadUrl: uploadInfo.uploadUrl,
+      offset: uploadInfo.offset,
+      size: uploadInfo.size,
+      percentage: uploadInfo.size > 0 ? Math.round((uploadInfo.offset / uploadInfo.size) * 100) : 0,
+      metadata: uploadInfo.metadata,
+      status: uploadInfo.status,
+      finalUrl,
+      mediaItem,
+      createdAt: uploadInfo.createdAt.toISOString(),
+      updatedAt: uploadInfo.updatedAt.toISOString(),
+      expiresAt: uploadInfo.expiresAt.toISOString(),
+    },
+  });
+});
+
+// POST /v1/upload/tus/:id/confirm - Confirm completed TUS upload and link to target
+const tusConfirmSchema = z.object({
+  targetType: z.enum(["post", "reel", "story", "avatar", "message"]),
+  targetId: z.string().uuid().optional(),
+});
+
+uploadRouter.post("/tus/:id/confirm", zValidator("json", tusConfirmSchema), async (c) => {
+  const user = getCurrentUser(c);
+  const uploadId = c.req.param("id");
+  const { targetType, targetId } = c.req.valid("json");
+
+  const uploadInfo = await tusService.getUploadStatus(uploadId);
+
+  if (!uploadInfo || uploadInfo.metadata.userId !== user.id) {
+    throw new HTTPException(404, { message: "Upload not found" });
+  }
+
+  if (uploadInfo.status !== "completed") {
+    throw new HTTPException(400, { message: "Upload not yet completed" });
+  }
+
+  // Verify target if provided
+  if (targetId) {
+    let targetExists = false;
+    switch (targetType) {
+      case "post":
+        targetExists = !!(await db.query.posts.findFirst({ where: eq(schema.posts.id, targetId) }));
+        break;
+      case "reel":
+        targetExists = !!(await db.query.reels.findFirst({ where: eq(schema.reels.id, targetId) }));
+        break;
+      case "story":
+        targetExists = !!(await db.query.stories.findFirst({ where: eq(schema.stories.id, targetId) }));
+        break;
+      case "avatar":
+        targetExists = true;
+        break;
+      case "message":
+        targetExists = !!(await db.query.messages.findFirst({ where: eq(schema.messages.id, targetId) }));
+        break;
+    }
+    if (!targetExists) {
+      throw new HTTPException(400, { message: "Target resource not found" });
+    }
+  }
+
+  // Update metadata with target info
+  const updatedMetadata = {
+    ...uploadInfo.metadata,
+    targetType,
+    targetId: targetId || "",
+  };
+
+  await db.update(schema.tusUploads)
+    .set({ metadata: updatedMetadata as any, updatedAt: new Date() })
+    .where(eq(schema.tusUploads.id, uploadId));
+
+  // Create pending upload record for backward compatibility
+  const [pending] = await db
+    .insert(schema.pendingUploads)
+    .values({
+      userId: user.id as string,
+      storagePath: (uploadInfo.metadata.targetType === "avatar" ? `avatars/${user.id}/avatar` : uploadInfo.metadata.storagePath || `tus/${user.id}/${uploadId}/${uploadInfo.metadata.filename}`) as string,
+      url: uploadInfo.uploadUrl as string,
+      confirmed: true,
+    })
+    .returning();
+
+  return c.json({
+    success: true,
+    data: {
+      pendingUploadId: pending.id,
+      url: uploadInfo.uploadUrl,
+      uploadId,
+    },
+  });
+});
+
+// GET /v1/upload/tus - List user's TUS uploads
+uploadRouter.get("/tus", async (c) => {
+  const user = getCurrentUser(c);
+  const status = c.req.query("status");
+  const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 100);
+  const offset = parseInt(c.req.query("offset") || "0", 10);
+
+  const uploads = await tusService.listUserUploads(user.id, status);
+
+  const paginated = uploads.slice(offset, offset + limit);
+
+  return c.json({
+    success: true,
+    data: paginated.map(upload => ({
+      uploadId: upload.id,
+      uploadUrl: upload.uploadUrl,
+      offset: upload.offset,
+      size: upload.size,
+      percentage: upload.size > 0 ? Math.round((upload.offset / upload.size) * 100) : 0,
+      metadata: upload.metadata,
+      status: upload.status,
+      createdAt: upload.createdAt.toISOString(),
+      updatedAt: upload.updatedAt.toISOString(),
+      expiresAt: upload.expiresAt.toISOString(),
+    })),
+    pagination: {
+      limit,
+      offset,
+      total: uploads.length,
+    },
+  });
+});
+
+// DELETE /v1/upload/tus/:id - Cancel TUS upload
+uploadRouter.delete("/tus/:id", async (c) => {
+  const user = getCurrentUser(c);
+  const uploadId = c.req.param("id");
+
+  const deleted = await tusService.deleteUpload(uploadId, user.id);
+
+  if (!deleted) {
+    throw new HTTPException(404, { message: "Upload not found" });
+  }
+
+  return c.status(204);
 });
 
 // GET /v1/upload/pending/:id - Get pending upload status
