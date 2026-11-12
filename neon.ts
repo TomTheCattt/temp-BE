@@ -22,6 +22,27 @@ export default defineConfig({
         CORS_ORIGIN: process.env.CORS_ORIGIN || "http://localhost:3000,http://localhost:8081",
         // Logging
         LOG_LEVEL: process.env.LOG_LEVEL || "info",
+        // OAuth providers (Google, Apple)
+        GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || "dev-client-id",
+        GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET || "dev-client-secret",
+        APPLE_CLIENT_ID: process.env.APPLE_CLIENT_ID || "dev-client-id",
+        APPLE_TEAM_ID: process.env.APPLE_TEAM_ID || "dev-team-id",
+        APPLE_KEY_ID: process.env.APPLE_KEY_ID || "dev-key-id",
+        APPLE_PRIVATE_KEY: process.env.APPLE_PRIVATE_KEY || "dev-private-key",
+        // Redis/Upstash for rate limiting
+        UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL || "",
+        UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN || "",
+        // OpenTelemetry
+        OTEL_EXPORTER_OTLP_ENDPOINT: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "",
+        OTEL_SERVICE_NAME: process.env.OTEL_SERVICE_NAME || "instagram-clone-api",
+        // Internal cron secret
+        INTERNAL_CRON_SECRET: process.env.INTERNAL_CRON_SECRET || "dev-secret-change-in-production",
+        // Neon Object Storage
+        NEON_STORAGE_ENDPOINT: process.env.NEON_STORAGE_ENDPOINT || "https://storage.neon.tech",
+        NEON_STORAGE_ACCESS_KEY_ID: process.env.NEON_STORAGE_ACCESS_KEY_ID || "",
+        NEON_STORAGE_SECRET_ACCESS_KEY: process.env.NEON_STORAGE_SECRET_ACCESS_KEY || "",
+        // Sentry
+        SENTRY_DSN: process.env.SENTRY_DSN || "",
       },
     },
     // WebSocket function for real-time chat/calls (separate for scaling)
@@ -33,6 +54,43 @@ export default defineConfig({
         BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET || "dev-secret-change-in-production",
         CORS_ORIGIN: process.env.CORS_ORIGIN || "http://localhost:3000,http://localhost:8081",
         LOG_LEVEL: process.env.LOG_LEVEL || "info",
+        UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL || "",
+        UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN || "",
+        OTEL_EXPORTER_OTLP_ENDPOINT: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "",
+        OTEL_SERVICE_NAME: process.env.OTEL_SERVICE_NAME || "instagram-clone-ws",
+      },
+    },
+    // Mediasoup SFU function for WebRTC media (requires UDP ports)
+    // This function handles audio/video routing, recording, and data channels
+    mediasoup: {
+      name: "Mediasoup SFU",
+      source: "src/websocket/mediasoup-index.ts",
+      externalPackages: ["bcrypt", "mediasoup", "mediasoup-client"],
+      // Mediasoup requires UDP ports for RTP/RTCP media transport
+      // Neon Functions supports custom port ranges via runtime config
+      env: {
+        BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET || "dev-secret-change-in-production",
+        CORS_ORIGIN: process.env.CORS_ORIGIN || "http://localhost:3000,http://localhost:8081",
+        LOG_LEVEL: process.env.LOG_LEVEL || "info",
+        // Mediasoup-specific configuration
+        MEDIASOUP_LOG_LEVEL: process.env.MEDIASOUP_LOG_LEVEL || "warn",
+        MEDIASOUP_RTC_MIN_PORT: process.env.MEDIASOUP_RTC_MIN_PORT || "10000",
+        MEDIASOUP_RTC_MAX_PORT: process.env.MEDIASOUP_RTC_MAX_PORT || "20000",
+        MEDIASOUP_LISTEN_IP: process.env.MEDIASOUP_LISTEN_IP || "0.0.0.0",
+        MEDIASOUP_ANNOUNCED_IP: process.env.MEDIASOUP_ANNOUNCED_IP || "",
+        // DTLS certificate for secure transport (optional, self-signed if not provided)
+        MEDIASOUP_DTLS_CERT_FILE: process.env.MEDIASOUP_DTLS_CERT_FILE || "",
+        MEDIASOUP_DTLS_KEY_FILE: process.env.MEDIASOUP_DTLS_KEY_FILE || "",
+        // Redis for cross-isolate signaling (scale to zero support)
+        UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL || "",
+        UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN || "",
+        // Object storage for recordings
+        NEON_STORAGE_ENDPOINT: process.env.NEON_STORAGE_ENDPOINT || "https://storage.neon.tech",
+        NEON_STORAGE_ACCESS_KEY_ID: process.env.NEON_STORAGE_ACCESS_KEY_ID || "",
+        NEON_STORAGE_SECRET_ACCESS_KEY: process.env.NEON_STORAGE_SECRET_ACCESS_KEY || "",
+        // OpenTelemetry
+        OTEL_EXPORTER_OTLP_ENDPOINT: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "",
+        OTEL_SERVICE_NAME: process.env.OTEL_SERVICE_NAME || "instagram-clone-mediasoup",
       },
     },
   },
@@ -44,8 +102,16 @@ export default defineConfig({
       access: "private",
     },
     // Public bucket for CDN-served content (thumbnails, processed media)
-    public: {
+    media: {
       access: "public_read",
+    },
+    // Thumbnails bucket
+    thumbnails: {
+      access: "public_read",
+    },
+    // Recordings bucket (for call recordings, live streams)
+    recordings: {
+      access: "private",
     },
   },
 
@@ -53,6 +119,9 @@ export default defineConfig({
   preview: {
     realtime: true,
   },
+
+  // AI Gateway - LLM and embedding inference
+  aiGateway: true,
 
   // Branch policy
   branch: (branch) => {
@@ -62,6 +131,7 @@ export default defineConfig({
         functions: {
           api: { runtime: "nodejs24" },
           ws: { runtime: "nodejs24" },
+          mediasoup: { runtime: "nodejs24" },
         },
       };
     }
@@ -72,6 +142,7 @@ export default defineConfig({
         functions: {
           api: { runtime: "nodejs24" },
           ws: { runtime: "nodejs24" },
+          mediasoup: { runtime: "nodejs24" },
         },
       };
     }
