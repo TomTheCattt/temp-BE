@@ -137,7 +137,10 @@ async function main() {
     const isVerified = Math.random() < 0.15;
     const isPrivate = Math.random() < 0.2;
 
-    const user = await prisma.user.upsert({
+    // Password hash for all test users (password: password123)
+const PASSWORD_HASH = "$2b$10$8K1p/a0dL1LXMIgoEDFrwOj9B6qL5jS.kL7oK8Y8Y8Y8Y8Y8Y8Y8Y8"; // bcrypt hash of 'password123'
+
+const user = await prisma.user.upsert({
       where: { id: `user-${i + 1}` },
       update: {
         fullName,
@@ -147,6 +150,10 @@ async function main() {
         avatarUrl: avatarUrl(username),
         isVerified,
         isPrivate,
+        name: fullName,
+        image: avatarUrl(username),
+        firebaseUid,
+        passwordHash: PASSWORD_HASH,
       },
       create: {
         id: `user-${i + 1}`,
@@ -158,6 +165,9 @@ async function main() {
         avatarUrl: avatarUrl(username),
         isVerified,
         isPrivate,
+        name: fullName,
+        image: avatarUrl(username),
+        passwordHash: PASSWORD_HASH,
         phone: Math.random() < 0.3 ? `+84${randomInt(900000000, 999999999)}` : null,
         website: Math.random() < 0.2 ? `https://${username}.dev` : null,
       },
