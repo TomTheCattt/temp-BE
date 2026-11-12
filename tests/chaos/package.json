@@ -1,0 +1,25 @@
+{
+  "name": "instagram-clone-chaos-tests",
+  "version": "1.0.0",
+  "description": "Chaos Engineering Tests for Instagram Clone Backend - Phase 12 Production Hardening (BE-185)",
+  "scripts": {
+    "chaos:list": "k6 run tests/chaos/master-chaos.js",
+    "chaos:neon-failover": "k6 run tests/chaos/neon-branch-failover.js",
+    "chaos:db-pool": "k6 run tests/chaos/db-pool-exhaustion.js",
+    "chaos:api-latency": "k6 run tests/chaos/latency-injection.js --env CHAOS_TARGET=api",
+    "chaos:db-latency": "k6 run tests/chaos/latency-injection.js --env CHAOS_TARGET=db",
+    "chaos:ws-partition": "k6 run tests/chaos/ws-network-partition.js",
+    "chaos:s3-failure": "k6 run tests/chaos/dependency-failure.js --env CHAOS_DEPENDENCY=s3",
+    "chaos:auth-failure": "k6 run tests/chaos/dependency-failure.js --env CHAOS_DEPENDENCY=auth",
+    "chaos:redis-failure": "k6 run tests/chaos/dependency-failure.js --env CHAOS_DEPENDENCY=redis",
+    "chaos:cpu-stress": "k6 run tests/chaos/resource-exhaustion.js --env CHAOS_RESOURCE=cpu",
+    "chaos:memory-stress": "k6 run tests/chaos/resource-exhaustion.js --env CHAOS_RESOURCE=memory",
+    "chaos:all": "npm run chaos:neon-failover && npm run chaos:db-pool && npm run chaos:api-latency && npm run chaos:ws-partition && npm run chaos:s3-failure && npm run chaos:auth-failure && npm run chaos:cpu-stress"
+  },
+  "devDependencies": {
+    "k6": "^0.53.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
