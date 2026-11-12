@@ -44,31 +44,9 @@ export const authMiddleware = createMiddleware(async (c, next) => {
       });
     }
 
-    // Fetch user from database
+    // Fetch user from database - select all columns to match the expected type
     const user = await db.query.users.findFirst({
       where: eq(schema.users.id, sessionRecord.userId),
-      columns: {
-        id: true,
-        firebaseUid: true,
-        username: true,
-        fullName: true,
-        email: true,
-        phone: true,
-        avatarUrl: true,
-        bio: true,
-        website: true,
-        isVerified: true,
-        isPrivate: true,
-        postsCount: true,
-        followersCount: true,
-        followingCount: true,
-        createdAt: true,
-        updatedAt: true,
-        // Better Auth required fields
-        name: true,
-        emailVerified: true,
-        image: true,
-      },
     });
 
     if (!user) {
@@ -119,28 +97,6 @@ export const optionalAuthMiddleware = createMiddleware(async (c, next) => {
     if (sessionRecord) {
       const user = await db.query.users.findFirst({
         where: eq(schema.users.id, sessionRecord.userId),
-        columns: {
-          id: true,
-          firebaseUid: true,
-          username: true,
-          fullName: true,
-          email: true,
-          phone: true,
-          avatarUrl: true,
-          bio: true,
-          website: true,
-          isVerified: true,
-          isPrivate: true,
-          postsCount: true,
-          followersCount: true,
-          followingCount: true,
-          createdAt: true,
-          updatedAt: true,
-          // Better Auth required fields
-          name: true,
-          emailVerified: true,
-          image: true,
-        },
       });
 
       if (user) {
