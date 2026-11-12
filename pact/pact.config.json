@@ -1,0 +1,22 @@
+{
+  "pactBrokerUrl": "https://pact-broker.example.com",
+  "pactBrokerToken": "${PACT_BROKER_TOKEN}",
+  "consumer": "instagram-ios-app",
+  "provider": "instagram-backend",
+  "publishVerificationResults": true,
+  "providerVersion": "${GITHUB_SHA}",
+  "providerBranch": "${GITHUB_REF_NAME}",
+  "consumerVersionSelectors": [
+    {
+      "matchingBranch": true,
+      "latest": true
+    },
+    {
+      "matchingBranch": true,
+      "latest": true,
+      "tag": "prod"
+    }
+  ],
+  "enablePending": true,
+  "includeWipPactsSince": "2024-01-01"
+}
